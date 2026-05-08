@@ -255,7 +255,7 @@ async def handle_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"• Записей в дневнике: {diary_count}\n\n"
         )
         if diary_count >= 5:
-        text_progress += "｡ﾟ Уже столько записей. Ты молодец!"
+            text_progress += "｡ﾟ Уже столько записей. Ты молодец!"
         elif diary_count >= 1:
             text_progress += "✦ Начало есть. Иногда это самое сложное."
         else:
