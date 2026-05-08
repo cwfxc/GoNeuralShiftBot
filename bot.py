@@ -190,7 +190,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data["name"] = user.first_name
 
     welcome = (
-        welcome = (
         f"Привет, {user.first_name} ✧\n\n"
         "Это пространство для работы с мыслями — теми, что давят, "
         "крутятся по кругу или не дают покоя.\n\n"
