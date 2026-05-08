@@ -144,7 +144,7 @@ def get_ai_response(user_id, user_message, mode="chat", context_data=None):
         temperature=0.7,
     )
 
-    reply = response.choices[0].message.content
+    reply = get_ai_response(user_id, text, mode='chat', context_data={})
 
     # Save to history for chat mode
     if mode == "chat":
