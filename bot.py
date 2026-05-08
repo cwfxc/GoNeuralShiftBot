@@ -144,7 +144,7 @@ def get_ai_response(user_id, user_message, mode="chat", context_data=None):
         temperature=0.7,
     )
 
-    reply = get_ai_response(user_id, text, mode='chat', context_data={})
+    reply = response.choices[0].message.content
 
     # Save to history for chat mode
     if mode == "chat":
@@ -311,7 +311,7 @@ async def ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context_data = {'thought': context.user_data.get('socratic_thought', text)}
             reply = get_ai_response(user_id, text, mode='socratic', context_data=context_data)
         else:
-            reply = get_ai_response(user_id, text, mode='chat')
+            reply = get_ai_response(user_id, text, mode='chat', context_data={})
 
         await update.message.reply_text(reply, reply_markup=back_keyboard())
     except Exception as e:
