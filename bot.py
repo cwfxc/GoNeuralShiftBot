@@ -485,7 +485,7 @@ async def donate(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Поддержать проект можно двумя способами:",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("⭐ Telegram Stars", callback_data="donate_stars")],
-            [InlineKeyboardButton("💳 Boosty (российские карты)", url="https://boosty.to/ваш_профиль")],
+            [InlineKeyboardButton("💳 Boosty (российские карты)", url="https://boosty.to/aileen/donate")],
         ])
     )
     return MAIN_MENU
@@ -589,6 +589,7 @@ def main():
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_main_menu),
                 MessageHandler(filters.VOICE, handle_voice),
                 MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment),
+                CallbackQueryHandler(donate_stars_callback, pattern='^donate_stars$'),
             ],
             AI_CHAT: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, ai_chat),
