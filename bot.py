@@ -484,6 +484,7 @@ async def donate(update: Update, context: ContextTypes.DEFAULT_TYPE):
         title="Поддержать GoNeuralShift",
         description="Спасибо что вы здесь. Ваша поддержка помогает развивать проект ✦",
         payload="donate",
+        provider_token="",
         currency="XTR",
         prices=[LabeledPrice("Донат", 1)],
     )
