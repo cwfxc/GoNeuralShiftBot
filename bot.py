@@ -2,6 +2,7 @@ import os
 import logging
 import tempfile
 from datetime import datetime
+from telegram import LabeledPrice
 from groq import Groq
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -163,6 +164,7 @@ def main_keyboard():
         [KeyboardButton("｡ﾟ Поговорить с ботом"), KeyboardButton("✦ Дневник мыслей")],
         [KeyboardButton("࿔ Сократовский диалог"), KeyboardButton("･ﾟ Дефузия")],
         [KeyboardButton("⊹ Мой прогресс"), KeyboardButton("ﾟ｡ Кризисная помощь")],
+        [KeyboardButton("⭐ Поддержать проект")],
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
@@ -280,6 +282,9 @@ async def handle_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif text == "ﾟ✦ Главное меню":
         await update.message.reply_text("Главное меню:", reply_markup=main_keyboard())
         return MAIN_MENU
+
+    elif text == "⭐ Поддержать проект":
+    return await donate(update, context)
 
     else:
         # Unknown text in main menu — treat as chat
@@ -473,6 +478,23 @@ async def handle_defusion_callback(update: Update, context: ContextTypes.DEFAULT
     await query.message.reply_text("Главное меню:", reply_markup=main_keyboard())
     return MAIN_MENU
 
+async def donate(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_invoice(
+        title="Поддержать GoNeuralShift",
+        description="Спасибо что вы здесь. Ваша поддержка помогает развивать проект ✦",
+        payload="donate",
+        currency="XTR",
+        prices=[LabeledPrice("Донат", 1)],
+    )
+    return MAIN_MENU
+
+async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "Спасибо ⭐ Это очень важно и приятно.\nВы помогаете проекту жить дальше ✦",
+        reply_markup=main_keyboard()
+    )
+    return MAIN_MENU
+
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Главное меню:", reply_markup=main_keyboard())
     return MAIN_MENU
@@ -548,6 +570,7 @@ def main():
             MAIN_MENU: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_main_menu),
                 MessageHandler(filters.VOICE, handle_voice),
+                MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment),
             ],
             AI_CHAT: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, ai_chat),
