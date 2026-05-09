@@ -284,7 +284,7 @@ async def handle_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return MAIN_MENU
 
     elif text == "⭐ Поддержать проект":
-    return await donate(update, context)
+        return await donate(update, context)
 
     else:
         # Unknown text in main menu — treat as chat
