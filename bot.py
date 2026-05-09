@@ -480,7 +480,20 @@ async def handle_defusion_callback(update: Update, context: ContextTypes.DEFAULT
     return MAIN_MENU
 
 async def donate(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_invoice(
+    await update.message.reply_text(
+        "Спасибо что вы здесь ✦\n\n"
+        "Поддержать проект можно двумя способами:",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("⭐ Telegram Stars", callback_data="donate_stars")],
+            [InlineKeyboardButton("💳 Boosty (российские карты)", url="https://boosty.to/ваш_профиль")],
+        ])
+    )
+    return MAIN_MENU
+
+async def donate_stars_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await query.message.reply_invoice(
         title="Поддержать GoNeuralShift",
         description="Спасибо что вы здесь. Ваша поддержка помогает развивать проект ✦",
         payload="donate",
@@ -488,7 +501,6 @@ async def donate(update: Update, context: ContextTypes.DEFAULT_TYPE):
         currency="XTR",
         prices=[LabeledPrice("Донат", 1)],
     )
-    return MAIN_MENU
 
 async def pre_checkout(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.pre_checkout_query
