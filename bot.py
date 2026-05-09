@@ -1,6 +1,7 @@
 import os
 import logging
 import tempfile
+from telegram.ext import PreCheckoutQueryHandler
 from datetime import datetime
 from telegram import LabeledPrice
 from groq import Groq
@@ -488,6 +489,10 @@ async def donate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return MAIN_MENU
 
+async def pre_checkout(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.pre_checkout_query
+    await query.answer(ok=True)
+
 async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Спасибо ⭐ Это очень важно и приятно.\nВы помогаете проекту жить дальше ✦",
@@ -605,6 +610,7 @@ def main():
         ],
     )
 
+    application.add_handler(PreCheckoutQueryHandler(pre_checkout))
     application.add_handler(conv_handler)
     print("🤖 GoNeuralShift запущен!")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
