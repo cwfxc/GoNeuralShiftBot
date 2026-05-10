@@ -482,10 +482,13 @@ async def handle_defusion_callback(update: Update, context: ContextTypes.DEFAULT
 async def donate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Спасибо что вы здесь ✦\n\n"
-        "Поддержать проект можно двумя способами:",
+        "Поддержать проект можно двумя способами:\n\n"
+        "💳 *СБП по номеру телефона:*\n"
+        "`+79910234966`\n"
+        "_(любой банк, без комиссии)_",
+        parse_mode='Markdown',
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("⭐ Telegram Stars", callback_data="donate_stars")],
-            [InlineKeyboardButton("💳 Boosty (российские карты)", url="https://boosty.to/aileen/donate")],
         ])
     )
     return MAIN_MENU
