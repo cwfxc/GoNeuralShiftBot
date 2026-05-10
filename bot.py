@@ -485,7 +485,7 @@ async def donate(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Поддержать проект можно двумя способами:\n\n"
         "💳 *СБП по номеру телефона:*\n"
         "`+79910234966`\n"
-        "_(любой банк, без комиссии)_",
+        "_(сбербанк или яндекс банк, без комиссии 🤍)_",
         parse_mode='Markdown',
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("⭐ Telegram Stars", callback_data="donate_stars")],
