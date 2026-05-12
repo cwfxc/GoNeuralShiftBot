@@ -177,8 +177,9 @@ def main_keyboard():
 
 def distortions_keyboard():
     buttons = []
-    for name in COGNITIVE_DISTORTIONS.keys():
-        buttons.append([InlineKeyboardButton(name, callback_data=f"dist_{name[:30]}")])
+    for name, desc in COGNITIVE_DISTORTIONS.items():
+        label = f"{name} — {desc[:35]}..."
+        buttons.append([InlineKeyboardButton(label, callback_data=f"dist_{name[:30]}")])
     buttons.append([InlineKeyboardButton("❓ Не знаю / Пропустить", callback_data="dist_skip")])
     return InlineKeyboardMarkup(buttons)
 
@@ -370,8 +371,8 @@ async def thought_diary_distortion(update: Update, context: ContextTypes.DEFAULT
         return MAIN_MENU
     context.user_data['td_thought'] = update.message.text
     await update.message.reply_text(
-        "Похоже ли это на одно из *когнитивных искажений*?",
-        parse_mode='Markdown',
+        "Когнитивные искажения — это автоматические ошибки мышления которые искажают реальность.\n\n"
+        "Узнаёте что-то похожее в своей мысли?",
         reply_markup=distortions_keyboard()
     )
     return THOUGHT_DIARY_DISTORTION
