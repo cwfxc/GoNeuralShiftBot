@@ -175,8 +175,10 @@ def main_keyboard():
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
-def distortions_keyboard():
+def distortions_keyboard(show_info=False):
     buttons = []
+    if not show_info:
+        buttons.append([InlineKeyboardButton("📖 Что такое искажения?", callback_data="dist_info")])
     for name in COGNITIVE_DISTORTIONS.keys():
         buttons.append([InlineKeyboardButton(name, callback_data=f"dist_{name[:30]}")])
     buttons.append([InlineKeyboardButton("❓ Не знаю / Пропустить", callback_data="dist_skip")])
@@ -379,6 +381,27 @@ async def thought_diary_distortion(update: Update, context: ContextTypes.DEFAULT
 async def handle_distortion_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+
+    if query.data == "dist_info":
+        info_text = (
+            "💡 *Когнитивные искажения* — это автоматические ошибки мышления:\n\n"
+            "🔮 *Чтение мыслей* — думаю что знаю мысли других\n"
+            "🌑 *Катастрофизация* — жду худшего как неизбежного\n"
+            "🏷 *Навешивание ярлыков* — вешаю глобальный ярлык\n"
+            "🔬 *Сверхобобщение* — один случай = правило навсегда\n"
+            "👁 *Фильтрация* — вижу только плохое\n"
+            "⚫ *Чёрно-белое мышление* — всё или ничего\n"
+            "⚡ *Долженствование* — жёсткие правила «должен»\n"
+            "🔗 *Персонализация* — беру на себя чужую ответственность\n"
+            "📉 *Обесценивание* — хорошее не считается\n"
+            "💭 *Эмоциональное мышление* — раз чувствую — значит правда"
+        )
+        await query.edit_message_text(
+            info_text + "\n\nТеперь выберите что похоже на вашу мысль:",
+            parse_mode='Markdown',
+            reply_markup=distortions_keyboard(show_info=True)
+        )
+        return THOUGHT_DIARY_DISTORTION
 
     chosen_key = query.data[5:]  # remove "dist_"
 
