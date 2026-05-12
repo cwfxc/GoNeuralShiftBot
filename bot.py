@@ -624,6 +624,7 @@ def main():
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_main_menu),
                 MessageHandler(filters.VOICE, handle_voice),
             ],
+        },
         fallbacks=[
             CommandHandler('cancel', cancel),
             CommandHandler('start', start),
