@@ -178,7 +178,7 @@ def main_keyboard():
 def distortions_keyboard(show_info=False):
     buttons = []
     if not show_info:
-        buttons.append([InlineKeyboardButton("📖 Что такое искажения?", callback_data="dist_info")])
+        buttons.append([InlineKeyboardButton("· · · Что такое искажения? · · ·", callback_data="dist_info")])
     for name in COGNITIVE_DISTORTIONS.keys():
         buttons.append([InlineKeyboardButton(name, callback_data=f"dist_{name[:30]}")])
     buttons.append([InlineKeyboardButton("❓ Не знаю / Пропустить", callback_data="dist_skip")])
