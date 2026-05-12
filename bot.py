@@ -619,8 +619,11 @@ def main():
                 MessageHandler(filters.TEXT & ~filters.COMMAND, defusion_choose),
                 MessageHandler(filters.VOICE, handle_voice),
             ],
-            DEFUSION_TECHNIQUE: [CallbackQueryHandler(handle_defusion_callback, pattern='^def_')],
-        },
+            DEFUSION_TECHNIQUE: [
+                CallbackQueryHandler(handle_defusion_callback, pattern='^def_'),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_main_menu),
+                MessageHandler(filters.VOICE, handle_voice),
+            ],
         fallbacks=[
             CommandHandler('cancel', cancel),
             CommandHandler('start', start),
