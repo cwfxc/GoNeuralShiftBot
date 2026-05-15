@@ -553,6 +553,30 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
     )
     return MAIN_MENU
 
+async def show_diary_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+    data = get_user_data(user_id)
+    entries = data["thought_diary"]
+
+    if not entries:
+        await query.message.reply_text("Записей пока нет.", reply_markup=main_keyboard())
+        return MAIN_MENU
+
+    # Show last 5 entries
+    text = "📋 *Ваши последние записи:*\n\n"
+    for i, entry in enumerate(entries[-5:][::-1], 1):
+        text += (
+            f"*{i}. {entry.get('date', '')}*\n"
+            f"Ситуация: _{entry.get('situation', '')[:80]}_\n"
+            f"Мысль: _{entry.get('thought', '')[:80]}_\n"
+            f"Альтернатива: _{entry.get('reframe', '')[:80]}_\n\n"
+        )
+
+    await query.message.reply_text(text, parse_mode='Markdown', reply_markup=main_keyboard())
+    return MAIN_MENU
+
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Главное меню:", reply_markup=main_keyboard())
     return MAIN_MENU
@@ -630,6 +654,7 @@ def main():
                 MessageHandler(filters.VOICE, handle_voice),
                 MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment),
                 CallbackQueryHandler(donate_stars_callback, pattern='^donate_stars$'),
+                CallbackQueryHandler(show_diary_callback, pattern='^show_diary$'),
             ],
             AI_CHAT: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, ai_chat),
