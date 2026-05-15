@@ -255,7 +255,7 @@ async def handle_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return DEFUSION_THOUGHT
 
-elif text == "⊹ Мой прогресс":
+    elif text == "⊹ Мой прогресс":
         user_id = update.effective_user.id
         data = get_user_data(user_id)
         diary_count = len(data["thought_diary"])
