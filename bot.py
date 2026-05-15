@@ -1,6 +1,9 @@
 import os
 import logging
 import tempfile
+import sqlite3
+import hashlib
+import json
 from telegram.ext import PreCheckoutQueryHandler
 from datetime import datetime
 from telegram import LabeledPrice
@@ -72,22 +75,94 @@ DEFUSION_TECHNIQUES = {
     ),
 }
 
+# =====================
+# DATABASE
+# =====================
+
+DB_PATH = "/app/data/goneuralshift.db"
+
+def init_db():
+    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY,
+            sessions_count INTEGER DEFAULT 0,
+            first_seen TEXT
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS diary (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_hash TEXT NOT NULL,
+            date TEXT NOT NULL,
+            data TEXT NOT NULL
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+def get_user_hash(user_id: int) -> str:
+    """One-way hash of user_id — owner cannot reverse it to identify user."""
+    secret = os.getenv("HASH_SECRET", "goneuralshift_secret")
+    return hashlib.sha256(f"{user_id}{secret}".encode()).hexdigest()
+
+def db_get_sessions(user_id: int) -> int:
+    conn = sqlite3.connect(DB_PATH)
+    row = conn.execute("SELECT sessions_count FROM users WHERE user_id=?", (user_id,)).fetchone()
+    conn.close()
+    return row[0] if row else 0
+
+def db_increment_sessions(user_id: int):
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("""
+        INSERT INTO users (user_id, sessions_count, first_seen)
+        VALUES (?, 1, ?)
+        ON CONFLICT(user_id) DO UPDATE SET sessions_count = sessions_count + 1
+    """, (user_id, datetime.now().strftime("%d.%m.%Y")))
+    conn.commit()
+    conn.close()
+
+def db_save_entry(user_id: int, entry: dict):
+    user_hash = get_user_hash(user_id)
+    entry["date"] = datetime.now().strftime("%d.%m.%Y %H:%M")
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        "INSERT INTO diary (user_hash, date, data) VALUES (?, ?, ?)",
+        (user_hash, entry["date"], json.dumps(entry, ensure_ascii=False))
+    )
+    conn.commit()
+    conn.close()
+
+def db_get_entries(user_id: int, limit: int = 5) -> list:
+    user_hash = get_user_hash(user_id)
+    conn = sqlite3.connect(DB_PATH)
+    rows = conn.execute(
+        "SELECT data FROM diary WHERE user_hash=? ORDER BY id DESC LIMIT ?",
+        (user_hash, limit)
+    ).fetchall()
+    conn.close()
+    return [json.loads(r[0]) for r in rows]
+
+def db_get_entry_count(user_id: int) -> int:
+    user_hash = get_user_hash(user_id)
+    conn = sqlite3.connect(DB_PATH)
+    count = conn.execute(
+        "SELECT COUNT(*) FROM diary WHERE user_hash=?", (user_hash,)
+    ).fetchone()[0]
+    conn.close()
+    return count
+
+# =====================
+# IN-MEMORY (chat history only)
+# =====================
+
 user_sessions = {}
 
 def get_user_data(user_id):
     if user_id not in user_sessions:
-        user_sessions[user_id] = {
-            "history": [],
-            "thought_diary": [],
-            "sessions_count": 0,
-            "name": "",
-        }
+        user_sessions[user_id] = {"history": []}
     return user_sessions[user_id]
-
-def save_diary_entry(user_id, entry):
-    data = get_user_data(user_id)
-    entry["date"] = datetime.now().strftime("%d.%m.%Y %H:%M")
-    data["thought_diary"].append(entry)
 
 def get_ai_response(user_id, user_message, mode="chat", context_data=None):
     data = get_user_data(user_id)
@@ -113,19 +188,19 @@ def get_ai_response(user_id, user_message, mode="chat", context_data=None):
 
 Если человеку очень плохо — скажи прямо что это серьёзно и предложи кнопку ✴ Кризисная помощь.
 Ты не замена психотерапевту.""",
-        
+
         "diary_reframe": f"""Ты — КПТ-терапевт. Пользователь заполнил дневник мыслей:
-Ситуация: {context_data.get('situation', '')}
-Эмоции: {context_data.get('emotion', '')}
-Автоматическая мысль: {context_data.get('thought', '')}
-Когнитивное искажение: {context_data.get('distortion', '')}
+Ситуация: {context_data.get('situation', '') if context_data else ''}
+Эмоции: {context_data.get('emotion', '') if context_data else ''}
+Автоматическая мысль: {context_data.get('thought', '') if context_data else ''}
+Когнитивное искажение: {context_data.get('distortion', '') if context_data else ''}
 
 Помоги пользователю сформулировать более сбалансированную альтернативную мысль.
 Задай один точный сократовский вопрос который поможет увидеть ситуацию шире.
 Отвечай тепло, по-русски, коротко.""",
 
         "socratic": f"""Ты — КПТ-терапевт ведущий сократовский диалог.
-Мысль пользователя: {context_data.get('thought', '')}
+Мысль пользователя: {context_data.get('thought', '') if context_data else ''}
 История диалога уже есть в сообщениях.
 
 Задавай по одному глубокому вопросу за раз. Не давай ответов — только вопросы.
@@ -135,12 +210,9 @@ def get_ai_response(user_id, user_message, mode="chat", context_data=None):
     }
 
     system = system_prompts.get(mode, system_prompts["chat"])
-
-    # Build messages with history
     messages = [{"role": "system", "content": system}]
 
     if mode == "chat":
-        # Add conversation history (last 10 messages)
         for msg in data["history"][-10:]:
             messages.append(msg)
 
@@ -155,17 +227,18 @@ def get_ai_response(user_id, user_message, mode="chat", context_data=None):
 
     reply = response.choices[0].message.content
 
-    # Save to history for chat mode
     if mode == "chat":
         data["history"].append({"role": "user", "content": user_message})
         data["history"].append({"role": "assistant", "content": reply})
-        # Keep last 20 messages
         if len(data["history"]) > 20:
             data["history"] = data["history"][-20:]
 
     return reply
 
-# Keyboards
+# =====================
+# KEYBOARDS
+# =====================
+
 def main_keyboard():
     keyboard = [
         [KeyboardButton("｡ﾟ Поговорить с ботом"), KeyboardButton("✦ Дневник мыслей")],
@@ -194,12 +267,13 @@ def back_keyboard():
     keyboard = [[KeyboardButton("ﾟ✦ Главное меню")]]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
-# Handlers
+# =====================
+# HANDLERS
+# =====================
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    data = get_user_data(user.id)
-    data["sessions_count"] += 1
-    data["name"] = user.first_name
+    db_increment_sessions(user.id)
 
     welcome = (
         f"Привет, {user.first_name} ✧\n\n"
@@ -257,14 +331,14 @@ async def handle_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif text == "⊹ Мой прогресс":
         user_id = update.effective_user.id
-        data = get_user_data(user_id)
-        diary_count = len(data["thought_diary"])
-        sessions = data["sessions_count"]
+        diary_count = db_get_entry_count(user_id)
+        sessions = db_get_sessions(user_id)
 
         text_progress = (
             f"📊 *Ваш прогресс*\n\n"
             f"• Сессий: {sessions}\n"
-            f"• Записей в дневнике: {diary_count}\n\n")
+            f"• Записей в дневнике: {diary_count}\n\n"
+        )
         if diary_count >= 5:
             text_progress += "｡ﾟ Уже столько записей. Ты молодец!"
         elif diary_count >= 1:
@@ -304,7 +378,6 @@ async def handle_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await donate(update, context)
 
     else:
-        # Unknown text in main menu — treat as chat
         await update.message.reply_text(
             "Выберите из меню или нажмите «｡ﾟ Поговорить с ботом» чтобы просто написать что беспокоит.",
             reply_markup=main_keyboard()
@@ -322,7 +395,6 @@ async def ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     mode = context.user_data.get('mode', 'chat')
     socratic_thought = context.user_data.get('socratic_thought', '')
 
-    # First message in socratic mode — save the thought
     if mode == 'socratic' and not socratic_thought:
         context.user_data['socratic_thought'] = text
         context.user_data['socratic_history'] = []
@@ -347,6 +419,7 @@ async def ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return AI_CHAT
 
 # === THOUGHT DIARY ===
+
 async def thought_diary_emotion(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.text == "ﾟ✦ Главное меню":
         await update.message.reply_text("Главное меню:", reply_markup=main_keyboard())
@@ -411,13 +484,12 @@ async def handle_distortion_callback(update: Update, context: ContextTypes.DEFAU
         )
         return THOUGHT_DIARY_DISTORTION
 
-    chosen_key = query.data[5:]  # remove "dist_"
+    chosen_key = query.data[5:]
 
     if chosen_key == "skip":
         context.user_data['td_distortion'] = "Не определено"
         distortion_info = ""
     else:
-        # Find full key by prefix
         full_key = next((k for k in COGNITIVE_DISTORTIONS if k[:30] == chosen_key), chosen_key)
         context.user_data['td_distortion'] = full_key
         distortion_info = f"\n\n💡 _{COGNITIVE_DISTORTIONS.get(full_key, '')}_"
@@ -433,7 +505,6 @@ async def handle_distortion_callback(update: Update, context: ContextTypes.DEFAU
         parse_mode='Markdown'
     )
 
-    # AI generates reframe question
     try:
         context_data = {
             'situation': situation,
@@ -472,7 +543,7 @@ async def thought_diary_reframe(update: Update, context: ContextTypes.DEFAULT_TY
         "distortion": context.user_data.get('td_distortion', ''),
         "reframe": context.user_data.get('td_reframe', ''),
     }
-    save_diary_entry(user_id, entry)
+    db_save_entry(user_id, entry)
 
     summary = (
         "✓︎ *Запись сохранена*\n\n"
@@ -484,6 +555,7 @@ async def thought_diary_reframe(update: Update, context: ContextTypes.DEFAULT_TY
     return MAIN_MENU
 
 # === DEFUSION ===
+
 async def defusion_choose(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.text == "ﾟ✦ Главное меню":
         await update.message.reply_text("Главное меню:", reply_markup=main_keyboard())
@@ -500,7 +572,7 @@ async def handle_defusion_callback(update: Update, context: ContextTypes.DEFAULT
     query = update.callback_query
     await query.answer()
 
-    chosen_key = query.data[4:]  # remove "def_"
+    chosen_key = query.data[4:]
     thought = context.user_data.get('defusion_thought', 'ваша мысль')
 
     full_key = next((k for k in DEFUSION_TECHNIQUES if k[:30] == chosen_key), chosen_key)
@@ -515,6 +587,8 @@ async def handle_defusion_callback(update: Update, context: ContextTypes.DEFAULT
     )
     await query.message.reply_text("Главное меню:", reply_markup=main_keyboard())
     return MAIN_MENU
+
+# === DONATE ===
 
 async def donate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -553,20 +627,20 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
     )
     return MAIN_MENU
 
+# === DIARY VIEW ===
+
 async def show_diary_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
-    data = get_user_data(user_id)
-    entries = data["thought_diary"]
+    entries = db_get_entries(user_id, limit=5)
 
     if not entries:
         await query.message.reply_text("Записей пока нет.", reply_markup=main_keyboard())
         return MAIN_MENU
 
-    # Show last 5 entries
     text = "📋 *Ваши последние записи:*\n\n"
-    for i, entry in enumerate(entries[-5:][::-1], 1):
+    for i, entry in enumerate(entries, 1):
         text += (
             f"*{i}. {entry.get('date', '')}*\n"
             f"Ситуация: _{entry.get('situation', '')[:80]}_\n"
@@ -581,12 +655,12 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Главное меню:", reply_markup=main_keyboard())
     return MAIN_MENU
 
+# === VOICE ===
+
 async def transcribe_voice(voice_file) -> str:
-    """Transcribe voice message using Groq Whisper."""
     with tempfile.NamedTemporaryFile(suffix='.ogg', delete=False) as tmp:
         tmp_path = tmp.name
         await voice_file.download_to_drive(tmp_path)
-
     try:
         with open(tmp_path, 'rb') as audio:
             transcription = groq_client.audio.transcriptions.create(
@@ -599,9 +673,7 @@ async def transcribe_voice(voice_file) -> str:
         os.unlink(tmp_path)
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle voice messages in any state — transcribe and process as text."""
     await update.message.chat.send_action("typing")
-
     try:
         voice = await update.message.voice.get_file()
         text = await transcribe_voice(voice)
@@ -613,10 +685,8 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        # Show transcription to user
         await update.message.reply_text(f"🎤 _{text}_", parse_mode='Markdown')
 
-        # Process as regular chat message
         user_id = update.effective_user.id
         mode = context.user_data.get('mode', 'chat')
 
@@ -638,10 +708,14 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=back_keyboard()
         )
 
-def main():
-    application = Application.builder().token(TOKEN).build()
+# =====================
+# MAIN
+# =====================
 
-    voice_handler = MessageHandler(filters.VOICE, handle_voice)
+def main():
+    init_db()
+
+    application = Application.builder().token(TOKEN).build()
 
     conv_handler = ConversationHandler(
         entry_points=[
@@ -672,7 +746,9 @@ def main():
                 MessageHandler(filters.TEXT & ~filters.COMMAND, thought_diary_distortion),
                 MessageHandler(filters.VOICE, handle_voice),
             ],
-            THOUGHT_DIARY_DISTORTION: [CallbackQueryHandler(handle_distortion_callback, pattern='^dist_')],
+            THOUGHT_DIARY_DISTORTION: [
+                CallbackQueryHandler(handle_distortion_callback, pattern='^dist_'),
+            ],
             THOUGHT_DIARY_REFRAME: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, thought_diary_reframe),
                 MessageHandler(filters.VOICE, handle_voice),
