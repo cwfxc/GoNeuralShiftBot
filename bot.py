@@ -255,7 +255,7 @@ async def handle_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return DEFUSION_THOUGHT
 
-    elif text == "⊹ Мой прогресс":
+elif text == "⊹ Мой прогресс":
         user_id = update.effective_user.id
         data = get_user_data(user_id)
         diary_count = len(data["thought_diary"])
@@ -272,7 +272,15 @@ async def handle_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             text_progress += "Пока записей нет. Дневник мыслей — хорошее место чтобы начать ･ﾟ"
 
-        await update.message.reply_text(text_progress, parse_mode='Markdown', reply_markup=main_keyboard())
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📋 Мои записи", callback_data="show_diary")]
+        ]) if diary_count > 0 else None
+
+        await update.message.reply_text(
+            text_progress,
+            parse_mode='Markdown',
+            reply_markup=keyboard if keyboard else main_keyboard()
+        )
         return MAIN_MENU
 
     elif text == "ﾟ｡ Кризисная помощь":
