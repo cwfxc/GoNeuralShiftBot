@@ -5,6 +5,7 @@ import tempfile
 import sqlite3
 import hashlib
 import json
+from collections import OrderedDict
 from telegram.ext import PreCheckoutQueryHandler
 from datetime import datetime
 from telegram import LabeledPrice
@@ -180,41 +181,53 @@ def db_save_entry(user_id: int, entry: dict):
     user_hash = get_user_hash(user_id)
     entry["date"] = datetime.now().strftime("%d.%m.%Y %H:%M")
     conn = sqlite3.connect(DB_PATH)
-    conn.execute(
-        "INSERT INTO diary (user_hash, date, data) VALUES (?, ?, ?)",
-        (user_hash, entry["date"], json.dumps(entry, ensure_ascii=False))
-    )
-    conn.commit()
-    conn.close()
+    try:
+        conn.execute(
+            "INSERT INTO diary (user_hash, date, data) VALUES (?, ?, ?)",
+            (user_hash, entry["date"], json.dumps(entry, ensure_ascii=False))
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 def db_get_entries(user_id: int, limit: int = 5) -> list:
     user_hash = get_user_hash(user_id)
     conn = sqlite3.connect(DB_PATH)
-    rows = conn.execute(
-        "SELECT data FROM diary WHERE user_hash=? ORDER BY id DESC LIMIT ?",
-        (user_hash, limit)
-    ).fetchall()
-    conn.close()
+    try:
+        rows = conn.execute(
+            "SELECT data FROM diary WHERE user_hash=? ORDER BY id DESC LIMIT ?",
+            (user_hash, limit)
+        ).fetchall()
+    finally:
+        conn.close()
     return [json.loads(r[0]) for r in rows]
 
 def db_get_entry_count(user_id: int) -> int:
     user_hash = get_user_hash(user_id)
     conn = sqlite3.connect(DB_PATH)
-    count = conn.execute(
-        "SELECT COUNT(*) FROM diary WHERE user_hash=?", (user_hash,)
-    ).fetchone()[0]
-    conn.close()
+    try:
+        count = conn.execute(
+            "SELECT COUNT(*) FROM diary WHERE user_hash=?", (user_hash,)
+        ).fetchone()[0]
+    finally:
+        conn.close()
     return count
 
 # =====================
 # IN-MEMORY (chat history only)
 # =====================
 
-user_sessions = {}
+MAX_TRACKED_SESSIONS = 500
+
+user_sessions = OrderedDict()
 
 def get_user_data(user_id):
-    if user_id not in user_sessions:
+    if user_id in user_sessions:
+        user_sessions.move_to_end(user_id)
+    else:
         user_sessions[user_id] = {"history": []}
+        if len(user_sessions) > MAX_TRACKED_SESSIONS:
+            user_sessions.popitem(last=False)
     return user_sessions[user_id]
 
 async def get_ai_response(user_id, user_message, mode="chat", context_data=None):
