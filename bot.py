@@ -1,4 +1,5 @@
 import os
+import asyncio
 import logging
 import tempfile
 import sqlite3
@@ -22,6 +23,13 @@ logger = logging.getLogger(__name__)
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+HASH_SECRET = os.getenv("HASH_SECRET")
+if not HASH_SECRET:
+    raise RuntimeError(
+        "HASH_SECRET is not set. Refusing to start: without it, user-hashing "
+        "would silently fall back to a value visible in the public source code, "
+        "which breaks the anonymity guarantee for diary entries."
+    )
 
 groq_client = Groq(api_key=GROQ_API_KEY)
 
@@ -81,12 +89,44 @@ DEFUSION_TECHNIQUES = {
 
 DB_PATH = "/app/data/goneuralshift.db"
 
+def get_user_hash(user_id: int) -> str:
+    """One-way hash of user_id — owner cannot reverse it to identify user."""
+    return hashlib.sha256(f"{user_id}{HASH_SECRET}".encode()).hexdigest()
+
+def _migrate_legacy_users_table(conn):
+    """Migrate users table from raw-user_id keys to hashed keys (privacy fix)."""
+    exists = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='users'"
+    ).fetchone()
+    if not exists:
+        return
+    cols = [row[1] for row in conn.execute("PRAGMA table_info(users)")]
+    if "user_id" not in cols:
+        return  # already migrated
+    conn.execute("ALTER TABLE users RENAME TO users_legacy")
+    conn.execute("""
+        CREATE TABLE users (
+            user_hash TEXT PRIMARY KEY,
+            sessions_count INTEGER DEFAULT 0,
+            first_seen TEXT
+        )
+    """)
+    rows = conn.execute("SELECT user_id, sessions_count, first_seen FROM users_legacy").fetchall()
+    for user_id, sessions_count, first_seen in rows:
+        conn.execute(
+            "INSERT INTO users (user_hash, sessions_count, first_seen) VALUES (?, ?, ?)",
+            (get_user_hash(user_id), sessions_count, first_seen)
+        )
+    conn.execute("DROP TABLE users_legacy")
+    conn.commit()
+
 def init_db():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
+    _migrate_legacy_users_table(conn)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
+            user_hash TEXT PRIMARY KEY,
             sessions_count INTEGER DEFAULT 0,
             first_seen TEXT
         )
@@ -102,26 +142,39 @@ def init_db():
     conn.commit()
     conn.close()
 
-def get_user_hash(user_id: int) -> str:
-    """One-way hash of user_id — owner cannot reverse it to identify user."""
-    secret = os.getenv("HASH_SECRET", "goneuralshift_secret")
-    return hashlib.sha256(f"{user_id}{secret}".encode()).hexdigest()
-
 def db_get_sessions(user_id: int) -> int:
+    user_hash = get_user_hash(user_id)
     conn = sqlite3.connect(DB_PATH)
-    row = conn.execute("SELECT sessions_count FROM users WHERE user_id=?", (user_id,)).fetchone()
-    conn.close()
-    return row[0] if row else 0
+    try:
+        row = conn.execute("SELECT sessions_count FROM users WHERE user_hash=?", (user_hash,)).fetchone()
+        return row[0] if row else 0
+    finally:
+        conn.close()
 
 def db_increment_sessions(user_id: int):
+    user_hash = get_user_hash(user_id)
     conn = sqlite3.connect(DB_PATH)
-    conn.execute("""
-        INSERT INTO users (user_id, sessions_count, first_seen)
-        VALUES (?, 1, ?)
-        ON CONFLICT(user_id) DO UPDATE SET sessions_count = sessions_count + 1
-    """, (user_id, datetime.now().strftime("%d.%m.%Y")))
-    conn.commit()
-    conn.close()
+    try:
+        conn.execute("""
+            INSERT INTO users (user_hash, sessions_count, first_seen)
+            VALUES (?, 1, ?)
+            ON CONFLICT(user_hash) DO UPDATE SET sessions_count = sessions_count + 1
+        """, (user_hash, datetime.now().strftime("%d.%m.%Y")))
+        conn.commit()
+    finally:
+        conn.close()
+
+def db_delete_user_data(user_id: int):
+    """Delete all diary entries and session stats for this user (privacy: right to erasure)."""
+    user_hash = get_user_hash(user_id)
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        conn.execute("DELETE FROM diary WHERE user_hash=?", (user_hash,))
+        conn.execute("DELETE FROM users WHERE user_hash=?", (user_hash,))
+        conn.commit()
+    finally:
+        conn.close()
+    user_sessions.pop(user_id, None)
 
 def db_save_entry(user_id: int, entry: dict):
     user_hash = get_user_hash(user_id)
@@ -164,7 +217,7 @@ def get_user_data(user_id):
         user_sessions[user_id] = {"history": []}
     return user_sessions[user_id]
 
-def get_ai_response(user_id, user_message, mode="chat", context_data=None):
+async def get_ai_response(user_id, user_message, mode="chat", context_data=None):
     data = get_user_data(user_id)
 
     system_prompts = {
@@ -220,7 +273,8 @@ def get_ai_response(user_id, user_message, mode="chat", context_data=None):
 
     messages.append({"role": "user", "content": user_message})
 
-    response = groq_client.chat.completions.create(
+    response = await asyncio.to_thread(
+        groq_client.chat.completions.create,
         model="llama-3.3-70b-versatile",
         messages=messages,
         max_tokens=500,
@@ -348,14 +402,16 @@ async def handle_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             text_progress += "Пока записей нет. Дневник мыслей — хорошее место чтобы начать ･ﾟ"
 
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("📋 Мои записи", callback_data="show_diary")]
-        ]) if diary_count > 0 else None
+        buttons = []
+        if diary_count > 0:
+            buttons.append([InlineKeyboardButton("📋 Мои записи", callback_data="show_diary")])
+        buttons.append([InlineKeyboardButton("ℹ️ Как хранятся мои данные", callback_data="privacy_info")])
+        buttons.append([InlineKeyboardButton("🗑 Удалить мои данные", callback_data="delete_data_ask")])
 
         await update.message.reply_text(
             text_progress,
             parse_mode='Markdown',
-            reply_markup=keyboard if keyboard else main_keyboard()
+            reply_markup=InlineKeyboardMarkup(buttons)
         )
         return MAIN_MENU
 
@@ -406,9 +462,9 @@ async def ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         if mode == 'socratic':
             context_data = {'thought': context.user_data.get('socratic_thought', text)}
-            reply = get_ai_response(user_id, text, mode='socratic', context_data=context_data)
+            reply = await get_ai_response(user_id, text, mode='socratic', context_data=context_data)
         else:
-            reply = get_ai_response(user_id, text, mode='chat', context_data={})
+            reply = await get_ai_response(user_id, text, mode='chat', context_data={})
 
         await update.message.reply_text(reply, reply_markup=back_keyboard())
     except Exception as e:
@@ -514,7 +570,7 @@ async def handle_distortion_callback(update: Update, context: ContextTypes.DEFAU
             'thought': thought,
             'distortion': distortion,
         }
-        ai_question = get_ai_response(
+        ai_question = await get_ai_response(
             query.from_user.id,
             f"Помоги мне переосмыслить мысль: {thought}",
             mode='diary_reframe',
@@ -653,24 +709,76 @@ async def show_diary_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     await query.message.reply_text(text, parse_mode='Markdown', reply_markup=main_keyboard())
     return MAIN_MENU
 
+# === PRIVACY / DATA CONTROL ===
+
+async def privacy_info_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    info = (
+        "ℹ️ *Как хранятся ваши данные*\n\n"
+        "• Ваш Telegram ID нигде не хранится в открытом виде — вместо него используется "
+        "необратимый хэш, поэтому связать запись дневника или статистику с конкретным "
+        "человеком нельзя, даже владельцу бота.\n\n"
+        "• Текст записей дневника мыслей хранится в базе — это нужно, чтобы вы могли "
+        "посмотреть свою историю в разделе «Мои записи».\n\n"
+        "• История переписки с ИИ хранится только в оперативной памяти сервера и "
+        "полностью исчезает при перезапуске бота — на диск она не сохраняется.\n\n"
+        "• Ваши сообщения на несколько секунд передаются во внешний ИИ-сервис (Groq) "
+        "для генерации ответа — без этого бот не может отвечать.\n\n"
+        "• Вы можете удалить все свои данные из базы в любой момент — кнопкой ниже."
+    )
+    await query.message.reply_text(info, parse_mode='Markdown', reply_markup=main_keyboard())
+    return MAIN_MENU
+
+async def delete_data_ask_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await query.message.reply_text(
+        "⚠️ Точно удалить все свои данные?\n\n"
+        "Будут безвозвратно удалены все записи дневника мыслей и статистика сессий. "
+        "Отменить это действие нельзя.",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("Да, удалить", callback_data="delete_data_execute"),
+            InlineKeyboardButton("Отмена", callback_data="delete_data_cancel"),
+        ]])
+    )
+    return MAIN_MENU
+
+async def delete_data_execute_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    db_delete_user_data(query.from_user.id)
+    await query.edit_message_text("🗑 Все ваши данные удалены.")
+    await query.message.reply_text("Главное меню:", reply_markup=main_keyboard())
+    return MAIN_MENU
+
+async def delete_data_cancel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text("Отменено. Ваши данные остались нетронуты.")
+    return MAIN_MENU
+
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Главное меню:", reply_markup=main_keyboard())
     return MAIN_MENU
 
 # === VOICE ===
 
+def _transcribe_file(tmp_path: str) -> str:
+    with open(tmp_path, 'rb') as audio:
+        transcription = groq_client.audio.transcriptions.create(
+            file=("voice.ogg", audio, "audio/ogg"),
+            model="whisper-large-v3-turbo",
+            language="ru",
+        )
+    return transcription.text
+
 async def transcribe_voice(voice_file) -> str:
     with tempfile.NamedTemporaryFile(suffix='.ogg', delete=False) as tmp:
         tmp_path = tmp.name
         await voice_file.download_to_drive(tmp_path)
     try:
-        with open(tmp_path, 'rb') as audio:
-            transcription = groq_client.audio.transcriptions.create(
-                file=("voice.ogg", audio, "audio/ogg"),
-                model="whisper-large-v3-turbo",
-                language="ru",
-            )
-        return transcription.text
+        return await asyncio.to_thread(_transcribe_file, tmp_path)
     finally:
         os.unlink(tmp_path)
 
@@ -697,9 +805,9 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if mode == 'socratic':
             context_data = {'thought': context.user_data.get('socratic_thought', text)}
-            reply = get_ai_response(user_id, text, mode='socratic', context_data=context_data)
+            reply = await get_ai_response(user_id, text, mode='socratic', context_data=context_data)
         else:
-            reply = get_ai_response(user_id, text, mode='chat', context_data={})
+            reply = await get_ai_response(user_id, text, mode='chat', context_data={})
 
         await update.message.reply_text(reply, reply_markup=back_keyboard())
 
@@ -731,6 +839,10 @@ def main():
                 MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment),
                 CallbackQueryHandler(donate_stars_callback, pattern='^donate_stars$'),
                 CallbackQueryHandler(show_diary_callback, pattern='^show_diary$'),
+                CallbackQueryHandler(privacy_info_callback, pattern='^privacy_info$'),
+                CallbackQueryHandler(delete_data_ask_callback, pattern='^delete_data_ask$'),
+                CallbackQueryHandler(delete_data_execute_callback, pattern='^delete_data_execute$'),
+                CallbackQueryHandler(delete_data_cancel_callback, pattern='^delete_data_cancel$'),
             ],
             AI_CHAT: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, ai_chat),
