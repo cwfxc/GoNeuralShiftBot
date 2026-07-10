@@ -606,7 +606,6 @@ async def handle_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         subscribed = db_is_subscribed(user_id)
         sub_label = "🔕 Выключить ежедневные сообщения" if subscribed else "🔔 Включить ежедневные сообщения"
         buttons.append([InlineKeyboardButton(sub_label, callback_data="toggle_subscription")])
-        buttons.append([InlineKeyboardButton("ℹ️ Как хранятся мои данные", callback_data="privacy_info")])
         buttons.append([InlineKeyboardButton("🗑 Удалить мои данные", callback_data="delete_data_ask")])
 
         await update.message.reply_text(
@@ -935,10 +934,7 @@ async def toggle_subscription_callback(update: Update, context: ContextTypes.DEF
         _schedule_user_today(context.job_queue, user_id)
         await query.message.reply_text(
             "🔔 Готово — буду присылать пару сообщений в день, утром и вечером, "
-            "время каждый раз немного случайное.\n\n"
-            "Небольшая деталь про приватность: чтобы присылать сообщения именно вам, боту "
-            "нужно знать ваш Telegram ID — в отличие от дневника мыслей, эта часть не анонимна. "
-            "Выключить можно в любой момент здесь же, кнопкой.",
+            "время каждый раз немного случайное.",
             reply_markup=main_keyboard()
         )
     return MAIN_MENU
@@ -1023,29 +1019,6 @@ async def show_diary_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     return MAIN_MENU
 
 # === PRIVACY / DATA CONTROL ===
-
-async def privacy_info_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    info = (
-        "ℹ️ *Как хранятся ваши данные*\n\n"
-        "• Записи дневника мыслей и статистика сессий привязаны не к вашему Telegram ID "
-        "напрямую, а к необратимому хэшу — связать их с конкретным человеком нельзя, "
-        "даже владельцу бота.\n\n"
-        "• Текст записей дневника мыслей хранится в базе — это нужно, чтобы вы могли "
-        "посмотреть свою историю в разделе «Мои записи».\n\n"
-        "• Чтобы присылать вам утренние и вечерние сообщения с вопросами для размышления, "
-        "бот хранит ваш настоящий Telegram ID (не хэш) — это единственное исключение, "
-        "потому что для отправки сообщений Telegram требует настоящий ID. Отключить это "
-        "можно в любой момент кнопкой «Выключить ежедневные сообщения» в «Мой прогресс».\n\n"
-        "• История переписки с ИИ хранится только в оперативной памяти сервера и "
-        "полностью исчезает при перезапуске бота — на диск она не сохраняется.\n\n"
-        "• Ваши сообщения на несколько секунд передаются во внешний ИИ-сервис (Groq) "
-        "для генерации ответа — без этого бот не может отвечать.\n\n"
-        "• Вы можете удалить все свои данные из базы в любой момент — кнопкой ниже."
-    )
-    await query.message.reply_text(info, parse_mode='Markdown', reply_markup=main_keyboard())
-    return MAIN_MENU
 
 async def delete_data_ask_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -1156,7 +1129,6 @@ def main():
                 MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment),
                 CallbackQueryHandler(donate_stars_callback, pattern='^donate_stars$'),
                 CallbackQueryHandler(show_diary_callback, pattern='^show_diary$'),
-                CallbackQueryHandler(privacy_info_callback, pattern='^privacy_info$'),
                 CallbackQueryHandler(delete_data_ask_callback, pattern='^delete_data_ask$'),
                 CallbackQueryHandler(delete_data_execute_callback, pattern='^delete_data_execute$'),
                 CallbackQueryHandler(delete_data_cancel_callback, pattern='^delete_data_cancel$'),
