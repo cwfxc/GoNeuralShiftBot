@@ -5,9 +5,14 @@ import tempfile
 import sqlite3
 import hashlib
 import json
+import random
 from collections import OrderedDict
 from telegram.ext import PreCheckoutQueryHandler
-from datetime import datetime
+from datetime import datetime, time as dt_time
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:  # Python <3.9 fallback
+    from backports.zoneinfo import ZoneInfo
 from telegram import LabeledPrice
 from groq import Groq
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardButton, InlineKeyboardMarkup
@@ -35,10 +40,12 @@ if not HASH_SECRET:
 groq_client = Groq(api_key=GROQ_API_KEY)
 
 # States
+# Добавлено новое состояние THOUGHT_DIARY_EMOTION_RECHECK — шаг переоценки эмоции
+# после переформулировки мысли (опора: Judith S. Beck, "Cognitive Behavior Therapy: Basics and Beyond")
 (MAIN_MENU, AI_CHAT,
  THOUGHT_DIARY_SITUATION, THOUGHT_DIARY_EMOTION, THOUGHT_DIARY_THOUGHT,
- THOUGHT_DIARY_DISTORTION, THOUGHT_DIARY_REFRAME,
- DEFUSION_THOUGHT, DEFUSION_TECHNIQUE) = range(9)
+ THOUGHT_DIARY_DISTORTION, THOUGHT_DIARY_REFRAME, THOUGHT_DIARY_EMOTION_RECHECK,
+ DEFUSION_THOUGHT, DEFUSION_TECHNIQUE) = range(10)
 
 COGNITIVE_DISTORTIONS = {
     "🔮 Чтение мыслей": "Убеждённость в том, что знаете мысли других без оснований.",
@@ -52,6 +59,41 @@ COGNITIVE_DISTORTIONS = {
     "📉 Обесценивание": "Отвержение позитивного опыта как незначительного.",
     "💭 Эмоциональное мышление": "Убеждённость в чём-то только потому, что так чувствуете.",
 }
+
+# Техники дефузии основаны на ACT-протоколах:
+# Hayes, S. C. — "Acceptance and Commitment Therapy: An Experiential Approach to Behavior Change"
+# Harris, R. — "The Happiness Trap"
+# =====================
+# ЕЖЕДНЕВНЫЕ СООБЩЕНИЯ (подписка)
+# =====================
+
+DEFAULT_TZ = "Europe/Moscow"
+
+MORNING_WINDOW = (8, 0, 11, 0)   # с 8:00 до 11:00
+EVENING_WINDOW = (19, 0, 22, 0)  # с 19:00 до 22:00
+
+# Смесь рефлексивных вопросов (Padesky, Socratic Questioning) и заземлённых аффирмаций.
+# Аффирмации намеренно не превосходные ("я справлюсь со всем"), а опирающиеся на факты —
+# исследования (Wood, Perunovic & Lee, 2009) показывают, что слишком позитивные утверждения
+# могут не помогать, а иногда усиливать тревогу у людей со сниженной самооценкой.
+PROMPTS_BANK = [
+    "Какая мысль сегодня возвращалась чаще всего? Она тебе помогает или мешает?",
+    "Если бы сегодняшний день прошёл в согласии с тем, что для тебя важно — как бы он выглядел?",
+    "Есть что-то, что ты откладываешь из страха, а не потому что это правда не нужно?",
+    "Что бы ты сказал другу, если бы он оказался в твоей сегодняшней ситуации?",
+    "Какую мысль ты сегодня принял за факт, хотя это была просто мысль?",
+    "Что из происходящего сейчас под твоим контролем, а что — нет?",
+    "Если убрать оценку «хорошо/плохо» — что просто есть в твоём дне сегодня?",
+    "Ты уже сталкивался с трудным раньше. Это не гарантия на сегодня, но это факт о тебе.",
+    "Тебе не обязательно чувствовать себя готовым, чтобы начать.",
+    "Прогресс редко выглядит как прямая линия — трудный день не отменяет то, что уже пройдено.",
+    "Можно одновременно тревожиться и всё равно сделать шаг.",
+    "Ты не обязан справляться со всем сразу. Достаточно следующего маленького шага.",
+    "Даже если сегодня кажется, что всё стоит на месте — что-то внутри всё равно меняется.",
+]
+
+def get_random_prompt() -> str:
+    return random.choice(PROMPTS_BANK)
 
 DEFUSION_TECHNIQUES = {
     "｡ﾟ Листья на воде": (
@@ -140,6 +182,18 @@ def init_db():
             data TEXT NOT NULL
         )
     """)
+    # ВАЖНО: в этой таблице user_id хранится НЕ хэшированным, в отличие от diary/users.
+    # Причина: чтобы бот мог сам прислать сообщение, Telegram требует настоящий chat_id
+    # (в приватных чатах он равен user_id) — необратимый хэш для этого не годится.
+    # Подписка на рассылку — единственная часть бота, где это применимо, и она полностью
+    # опциональна (кнопка вкл/выкл), в отличие от анонимного по умолчанию дневника мыслей.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS subscribers (
+            user_id INTEGER PRIMARY KEY,
+            subscribed_at TEXT,
+            timezone TEXT DEFAULT 'Europe/Moscow'
+        )
+    """)
     conn.commit()
     conn.close()
 
@@ -176,6 +230,7 @@ def db_delete_user_data(user_id: int):
     finally:
         conn.close()
     user_sessions.pop(user_id, None)
+    db_unsubscribe(user_id)  # «Удалить мои данные» должно отменять и подписку на рассылку
 
 def db_save_entry(user_id: int, entry: dict):
     user_hash = get_user_hash(user_id)
@@ -213,6 +268,43 @@ def db_get_entry_count(user_id: int) -> int:
         conn.close()
     return count
 
+def db_subscribe(user_id: int, timezone: str = DEFAULT_TZ):
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        conn.execute("""
+            INSERT INTO subscribers (user_id, subscribed_at, timezone)
+            VALUES (?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET timezone = excluded.timezone
+        """, (user_id, datetime.now().strftime("%d.%m.%Y %H:%M"), timezone))
+        conn.commit()
+    finally:
+        conn.close()
+
+def db_unsubscribe(user_id: int):
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        conn.execute("DELETE FROM subscribers WHERE user_id=?", (user_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+def db_is_subscribed(user_id: int) -> bool:
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        row = conn.execute("SELECT 1 FROM subscribers WHERE user_id=?", (user_id,)).fetchone()
+        return row is not None
+    finally:
+        conn.close()
+
+def db_get_all_subscribers() -> list:
+    """Возвращает список (user_id, timezone) всех подписчиков — используется планировщиком."""
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        rows = conn.execute("SELECT user_id, timezone FROM subscribers").fetchall()
+    finally:
+        conn.close()
+    return rows
+
 # =====================
 # IN-MEMORY (chat history only)
 # =====================
@@ -234,47 +326,110 @@ async def get_ai_response(user_id, user_message, mode="chat", context_data=None)
     data = get_user_data(user_id)
 
     system_prompts = {
-        "chat": """Ты — GoNeuralShift, КПТ-ассистент. Говоришь как живой, тёплый человек которому реально интересно что происходит с собеседником — не как терапевт из учебника.
+        "chat": """<роль>
+Ты — GoNeuralShift, КПТ/ACT-ассистент. Говоришь как живой, тёплый человек, которому реально интересно
+что происходит с собеседником — не как терапевт из учебника и не как чат-бот поддержки.
+</роль>
 
-Как ты работаешь:
-
-— Сначала контакт, потом всё остальное. Не торопись к техникам и переосмыслению — убедись что человек почувствовал что его услышали.
-— Ты участвуешь, а не просто отражаешь. У тебя есть своя реакция на то что говорит человек. После отклика — один конкретный вопрос. Не общий («как ты себя чувствуешь?»), а точный («это случилось один раз или так бывает часто?»).
-— Замечай то что не сказано. Если человек говорит «всё нормально» но описывает явно тяжёлую ситуацию — это важно. Мягко обрати внимание.
-— Валидируй чувства — но не сливайся с деструктивными мыслями. Можно признать что человеку больно и одновременно мягко поставить под сомнение его интерпретацию.
-— Разделяй человека и его мысли. Не «ты неудачник» — а «ты думаешь что ты неудачник». Это важно.
+<принципы>
+— Сначала контакт, потом всё остальное. Не торопись к техникам и переосмыслению — убедись что человек
+почувствовал что его услышали.
+— Ты участвуешь, а не просто отражаешь. У тебя есть своя реакция на то что говорит человек. После отклика —
+один конкретный вопрос. Не общий («как ты себя чувствуешь?»), а точный («это случилось один раз или так
+бывает часто?»).
+— Замечай то что не сказано. Если человек говорит «всё нормально» но описывает явно тяжёлую ситуацию —
+это важно. Мягко обрати внимание.
+— Валидируй чувства — но не сливайся с деструктивными мыслями. Можно признать что человеку больно и
+одновременно мягко поставить под сомнение его интерпретацию (опора: Padesky, Socratic Questioning, 1993 —
+вопрос не «правда ли мысль», а помогает ли она).
+— Разделяй человека и его мысли. Не «ты неудачник» — а «ты думаешь что ты неудачник».
 — Никогда не говори человеку что ему делать. Только вопросы и наблюдения — пусть сам приходит к выводам.
-— Если видишь когнитивное искажение — назови его мягко, как наблюдение, не нотацию.
+— Если видишь когнитивное искажение (по классификации Burns, "Feeling Good") — назови его мягко, как
+наблюдение, не нотацию.
 — Если человек написал мало — не засыпай вопросами. Один вопрос. Дай пространство.
+</принципы>
 
-Формат:
-— Максимум 2-3 предложения
-— Живой язык, никакого канцелярита
-— Никаких слов: «безусловно», «конечно», «это важно», «я понимаю»
+<безопасность_уровни>
+Уровень 1 (бытовой стресс, тревога, конфликт, грусть) — обычный тёплый диалог, вопросы по принципам выше.
 
-Если человеку очень плохо — скажи прямо что это серьёзно и предложи кнопку ✴ Кризисная помощь.
-Но не предлагай кризисную помощь слишком часто, особенно если человек отказался и нуждается именно в твоей помощи.
+Уровень 2 (устойчиво низкое настроение несколько сообщений подряд, безнадёжность, фразы вроде «смысла нет»,
+«я больше не могу», но БЕЗ прямого упоминания вреда себе) — мягко, но прямо спроси:
+«Бывают ли у тебя мысли о том, чтобы причинить себе вред?» Это обязательный прямой вопрос, не обходи его
+метафорами и не бойся его задать — прямой вопрос снижает риск, а не провоцирует его (опора:
+Columbia Suicide Severity Rating Scale, принцип прямого скрининга).
+
+Уровень 3 (прямое упоминание самоповреждения, суицидальных мыслей, плана) —
+останови обычную технику. Скажи прямо и без драматизации, что это серьёзно, и что ты не замена
+специалисту в такой ситуации. Дай кнопку ✴ Кризисная помощь. Не продолжай терапевтическую работу с
+мыслью, пока не проверено что человек в безопасности прямо сейчас.
+Не предлагай кризисную помощь повторно на каждом сообщении подряд, особенно если человек уже отказался
+и явно нуждается именно в разговоре — но не убирай эту опцию из виду.
+</безопасность_уровни>
+
+<формат>
+Максимум 2-3 предложения. Живой язык, никакого канцелярита.
+Никогда не используй слова: «безусловно», «конечно», «это важно», «я понимаю».
+</формат>
+
+<пример>
+Плохой ответ: «Я понимаю, это действительно тяжело. Важно помнить, что все через это проходят.»
+Хороший ответ: «Ого. То, как ты это описываешь — звучит будто ты держишь это в одиночку уже давно.
+Так и есть?»
+</пример>
+
 Ты не замена психотерапевту.
 ВАЖНО: отвечай ТОЛЬКО на русском языке. Никаких иероглифов, латиницы или других символов.""",
 
-        "diary_reframe": f"""Ты — КПТ-терапевт. Пользователь заполнил дневник мыслей:
+        "diary_reframe": f"""<роль>Ты — КПТ-терапевт, работающий по структуре дневника мыслей Judith S. Beck
+("Cognitive Behavior Therapy: Basics and Beyond").</роль>
+
+<контекст>
 Ситуация: {context_data.get('situation', '') if context_data else ''}
 Эмоции: {context_data.get('emotion', '') if context_data else ''}
 Автоматическая мысль: {context_data.get('thought', '') if context_data else ''}
 Когнитивное искажение: {context_data.get('distortion', '') if context_data else ''}
+</контекст>
 
+<задача>
 Помоги пользователю сформулировать более сбалансированную альтернативную мысль.
-Задай один точный сократовский вопрос который поможет увидеть ситуацию шире.
-Отвечай тепло, по-русски, коротко.""",
+Задай один точный сократовский вопрос, который поможет увидеть ситуацию шире — например, про
+доказательства за/против мысли, или про то, что бы он сказал другу в такой же ситуации.
+Не давай альтернативную мысль сам — веди пользователя к тому, чтобы он сформулировал её сам.
+</задача>
 
-        "socratic": f"""Ты — КПТ-терапевт ведущий сократовский диалог.
+<формат>Максимум 2-3 предложения. Тепло, по-русски, без канцелярита.</формат>""",
+
+        "reframe_check": """<роль>Ты — КПТ-терапевт.</роль>
+<задача>
+Пользователь только что сформулировал альтернативную, более сбалансированную мысль.
+Спроси его: «Оцени ещё раз силу первоначальной эмоции (0-100%) — изменилась ли она сейчас?»
+Это не формальность: сравнение цифр «до» и «после» — конкретное доказательство того, что работа с
+мыслью меняет состояние, а не просто разговор ради разговора.
+</задача>
+<формат>1-2 предложения, тепло, по-русски.</формат>""",
+
+        "socratic": f"""<роль>Ты — КПТ-терапевт, ведущий сократовский диалог по методу Christine Padesky
+("Socratic Questioning: Changing Minds or Guiding Discovery?", 1993).</роль>
+
+<контекст>
 Мысль пользователя: {context_data.get('thought', '') if context_data else ''}
 История диалога уже есть в сообщениях.
+</контекст>
 
-Задавай по одному глубокому вопросу за раз. Не давай ответов — только вопросы.
-Цель: помочь человеку самому обнаружить слабые места в деструктивной мысли.
-По итогу (через 4-5 обменов) мягко подведи к более сбалансированному взгляду.
-Отвечай по-русски, тепло и коротко.""",
+<последовательность_вопросов>
+Веди диалог через эти четыре типа вопросов, по одному вопросу за раз, в этом порядке:
+1. Уточняющий — что конкретно произошло, что именно было сказано или сделано.
+2. Про доказательства — какие факты подтверждают эту мысль, какие ей противоречат.
+3. Про альтернативы — как ещё можно объяснить эту ситуацию.
+4. Про полезность — даже если мысль частично правда, помогает ли она пользователю, или мешает.
+</последовательность_вопросов>
+
+<правила>
+Не давай ответов и не подсказывай выводы — только вопросы. Цель: пользователь сам обнаруживает слабые
+места в мысли. Через 4-5 обменов мягко подведи итог, но и итог сформулируй как вопрос, а не утверждение.
+</правила>
+
+<формат>Один вопрос за раз. Максимум 2-3 предложения. Тепло, по-русски.</формат>""",
     }
 
     system = system_prompts.get(mode, system_prompts["chat"])
@@ -291,7 +446,9 @@ async def get_ai_response(user_id, user_message, mode="chat", context_data=None)
         model="llama-3.3-70b-versatile",
         messages=messages,
         max_tokens=500,
-        temperature=0.7,
+        # Temperature понижена с 0.7 до 0.45 — для терапевтического контекста модель должна быть
+        # стабильнее в следовании правилам (не соскальзывать в советы вместо вопросов)
+        temperature=0.45,
     )
 
     reply = response.choices[0].message.content
@@ -362,7 +519,7 @@ async def handle_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text == "｡ﾟ Поговорить с ботом":
         await update.message.reply_text(
             "Расскажите что происходит. Я здесь и слушаю 🤍\n\n"
-            "_(Напишите «ﾟ✦ Главное меню» чтобы вернуться)_",
+            "_(Нажмите «ﾟ✦ Главное меню» чтобы вернуться)_",
             parse_mode='Markdown',
             reply_markup=back_keyboard()
         )
@@ -418,6 +575,9 @@ async def handle_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         buttons = []
         if diary_count > 0:
             buttons.append([InlineKeyboardButton("📋 Мои записи", callback_data="show_diary")])
+        subscribed = db_is_subscribed(user_id)
+        sub_label = "🔕 Выключить ежедневные сообщения" if subscribed else "🔔 Включить ежедневные сообщения"
+        buttons.append([InlineKeyboardButton(sub_label, callback_data="toggle_subscription")])
         buttons.append([InlineKeyboardButton("ℹ️ Как хранятся мои данные", callback_data="privacy_info")])
         buttons.append([InlineKeyboardButton("🗑 Удалить мои данные", callback_data="delete_data_ask")])
 
@@ -600,6 +760,8 @@ async def handle_distortion_callback(update: Update, context: ContextTypes.DEFAU
     return THOUGHT_DIARY_REFRAME
 
 async def thought_diary_reframe(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Пользователь прислал альтернативную мысль. Вместо немедленного сохранения —
+    задаём шаг переоценки эмоции (reframe_check), опора: Judith S. Beck."""
     if update.message.text == "ﾟ✦ Главное меню":
         await update.message.reply_text("Главное меню:", reply_markup=main_keyboard())
         return MAIN_MENU
@@ -607,19 +769,47 @@ async def thought_diary_reframe(update: Update, context: ContextTypes.DEFAULT_TY
     user_id = update.effective_user.id
     context.user_data['td_reframe'] = update.message.text
 
+    try:
+        recheck_question = await get_ai_response(
+            user_id,
+            "Спроси про переоценку эмоции",
+            mode='reframe_check',
+            context_data={}
+        )
+        await update.message.reply_text(recheck_question, reply_markup=back_keyboard())
+    except Exception as e:
+        logger.error(f"Groq error: {e}")
+        await update.message.reply_text(
+            "Оцени ещё раз силу первоначальной эмоции (0-100%) — изменилась ли она сейчас?",
+            reply_markup=back_keyboard()
+        )
+
+    return THOUGHT_DIARY_EMOTION_RECHECK
+
+async def thought_diary_emotion_recheck(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Финальный шаг: сохраняем запись вместе с переоценённой силой эмоции."""
+    if update.message.text == "ﾟ✦ Главное меню":
+        await update.message.reply_text("Главное меню:", reply_markup=main_keyboard())
+        return MAIN_MENU
+
+    user_id = update.effective_user.id
+    context.user_data['td_emotion_after'] = update.message.text
+
     entry = {
         "situation": context.user_data.get('td_situation', ''),
         "emotion": context.user_data.get('td_emotion', ''),
         "thought": context.user_data.get('td_thought', ''),
         "distortion": context.user_data.get('td_distortion', ''),
         "reframe": context.user_data.get('td_reframe', ''),
+        "emotion_after": context.user_data.get('td_emotion_after', ''),
     }
     db_save_entry(user_id, entry)
 
     summary = (
         "✓︎ *Запись сохранена*\n\n"
         f"♒︎ Исходная мысль: _{entry['thought'][:100]}_\n"
-        f"ヅ︎ Альтернатива: _{entry['reframe'][:150]}_\n\n"
+        f"ヅ︎ Альтернатива: _{entry['reframe'][:150]}_\n"
+        f"↺ Эмоция до/после: _{entry['emotion']}_ → _{entry['emotion_after']}_\n\n"
         "Отличная работа. Каждая такая запись постепенно меняет нейронные паттерны."
     )
     await update.message.reply_text(summary, parse_mode='Markdown', reply_markup=main_keyboard())
@@ -657,6 +847,72 @@ async def handle_defusion_callback(update: Update, context: ContextTypes.DEFAULT
         parse_mode='Markdown'
     )
     await query.message.reply_text("Главное меню:", reply_markup=main_keyboard())
+    return MAIN_MENU
+
+# === ЕЖЕДНЕВНЫЕ СООБЩЕНИЯ: ПЛАНИРОВЩИК ===
+
+def _random_time_in_window(window: tuple) -> tuple:
+    """Возвращает случайные (час, минута) внутри окна (h1, m1, h2, m2)."""
+    h1, m1, h2, m2 = window
+    start_minutes = h1 * 60 + m1
+    end_minutes = h2 * 60 + m2
+    chosen = random.randint(start_minutes, end_minutes)
+    return chosen // 60, chosen % 60
+
+def _schedule_user_today(job_queue, user_id: int, timezone: str = DEFAULT_TZ):
+    """Планирует утреннее и вечернее сообщение для одного пользователя на сегодня —
+    если окно уже прошло, просто пропускает его (сообщение придёт завтра по общему расписанию)."""
+    tz = ZoneInfo(timezone)
+    now = datetime.now(tz)
+
+    for window, label in ((MORNING_WINDOW, "morning"), (EVENING_WINDOW, "evening")):
+        h, m = _random_time_in_window(window)
+        run_at = now.replace(hour=h, minute=m, second=0, microsecond=0)
+        if run_at <= now:
+            continue
+        job_queue.run_once(
+            send_prompt_job,
+            when=run_at,
+            data={"user_id": user_id},
+            name=f"prompt_{user_id}_{label}_{run_at.date()}"
+        )
+
+async def send_prompt_job(context: ContextTypes.DEFAULT_TYPE):
+    user_id = context.job.data["user_id"]
+    try:
+        await context.bot.send_message(chat_id=user_id, text=get_random_prompt())
+    except Exception as e:
+        logger.error(f"Не удалось отправить сообщение подписчику {user_id}: {e}")
+
+async def schedule_all_subscribers_daily(context: ContextTypes.DEFAULT_TYPE):
+    """Запускается раз в сутки (00:05) — планирует новое случайное утреннее и вечернее
+    сообщение на сегодня для каждого подписчика."""
+    for user_id, timezone in db_get_all_subscribers():
+        _schedule_user_today(context.job_queue, user_id, timezone or DEFAULT_TZ)
+
+async def toggle_subscription_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+
+    if db_is_subscribed(user_id):
+        db_unsubscribe(user_id)
+        await query.message.reply_text(
+            "🔕 Ежедневные сообщения выключены. Включить их снова можно в любой момент "
+            "в разделе «⊹ Мой прогресс».",
+            reply_markup=main_keyboard()
+        )
+    else:
+        db_subscribe(user_id)
+        _schedule_user_today(context.job_queue, user_id)
+        await query.message.reply_text(
+            "🔔 Готово — буду присылать пару сообщений в день, утром и вечером, "
+            "время каждый раз немного случайное.\n\n"
+            "Небольшая деталь про приватность: чтобы присылать сообщения именно вам, боту "
+            "нужно знать ваш Telegram ID — в отличие от дневника мыслей, эта часть не анонимна. "
+            "Выключить можно в любой момент здесь же, кнопкой.",
+            reply_markup=main_keyboard()
+        )
     return MAIN_MENU
 
 # === DONATE ===
@@ -716,8 +972,11 @@ async def show_diary_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
             f"*{i}. {entry.get('date', '')}*\n"
             f"Ситуация: _{entry.get('situation', '')[:80]}_\n"
             f"Мысль: _{entry.get('thought', '')[:80]}_\n"
-            f"Альтернатива: _{entry.get('reframe', '')[:80]}_\n\n"
+            f"Альтернатива: _{entry.get('reframe', '')[:80]}_\n"
         )
+        if entry.get('emotion_after'):
+            text += f"Эмоция до/после: _{entry.get('emotion', '')}_ → _{entry.get('emotion_after', '')}_\n"
+        text += "\n"
 
     await query.message.reply_text(text, parse_mode='Markdown', reply_markup=main_keyboard())
     return MAIN_MENU
@@ -856,6 +1115,7 @@ def main():
                 CallbackQueryHandler(delete_data_ask_callback, pattern='^delete_data_ask$'),
                 CallbackQueryHandler(delete_data_execute_callback, pattern='^delete_data_execute$'),
                 CallbackQueryHandler(delete_data_cancel_callback, pattern='^delete_data_cancel$'),
+                CallbackQueryHandler(toggle_subscription_callback, pattern='^toggle_subscription$'),
             ],
             AI_CHAT: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, ai_chat),
@@ -880,6 +1140,10 @@ def main():
                 MessageHandler(filters.TEXT & ~filters.COMMAND, thought_diary_reframe),
                 MessageHandler(filters.VOICE, handle_voice),
             ],
+            THOUGHT_DIARY_EMOTION_RECHECK: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, thought_diary_emotion_recheck),
+                MessageHandler(filters.VOICE, handle_voice),
+            ],
             DEFUSION_THOUGHT: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, defusion_choose),
                 MessageHandler(filters.VOICE, handle_voice),
@@ -898,6 +1162,19 @@ def main():
 
     application.add_handler(PreCheckoutQueryHandler(pre_checkout))
     application.add_handler(conv_handler)
+
+    # Планировщик ежедневных сообщений:
+    # 1) каждый день в 00:05 по МСК заново раскидывает случайное утреннее/вечернее время
+    #    для всех текущих подписчиков;
+    # 2) сразу при старте бота досчитывает окна на сегодня — иначе после рестарта бота
+    #    в середине дня подписчики не получили бы сегодняшние сообщения.
+    application.job_queue.run_daily(
+        schedule_all_subscribers_daily,
+        time=dt_time(hour=0, minute=5, tzinfo=ZoneInfo(DEFAULT_TZ))
+    )
+    for sub_user_id, sub_timezone in db_get_all_subscribers():
+        _schedule_user_today(application.job_queue, sub_user_id, sub_timezone or DEFAULT_TZ)
+
     print("🤖 GoNeuralShift запущен!")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
