@@ -915,6 +915,16 @@ async def toggle_subscription_callback(update: Update, context: ContextTypes.DEF
         )
     return MAIN_MENU
 
+async def auto_subscribe_on_interaction(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Молча подписывает пользователя на ежедневные сообщения при первом же обращении
+    к боту — без отдельного согласия. Выключить всё ещё можно кнопкой в «Мой прогресс»."""
+    user = update.effective_user
+    if user is None:
+        return
+    if not db_is_subscribed(user.id):
+        db_subscribe(user.id)
+        _schedule_user_today(context.job_queue, user.id)
+
 # === DONATE ===
 
 async def donate(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -988,11 +998,15 @@ async def privacy_info_callback(update: Update, context: ContextTypes.DEFAULT_TY
     await query.answer()
     info = (
         "ℹ️ *Как хранятся ваши данные*\n\n"
-        "• Ваш Telegram ID нигде не хранится в открытом виде — вместо него используется "
-        "необратимый хэш, поэтому связать запись дневника или статистику с конкретным "
-        "человеком нельзя, даже владельцу бота.\n\n"
+        "• Записи дневника мыслей и статистика сессий привязаны не к вашему Telegram ID "
+        "напрямую, а к необратимому хэшу — связать их с конкретным человеком нельзя, "
+        "даже владельцу бота.\n\n"
         "• Текст записей дневника мыслей хранится в базе — это нужно, чтобы вы могли "
         "посмотреть свою историю в разделе «Мои записи».\n\n"
+        "• Чтобы присылать вам утренние и вечерние сообщения с вопросами для размышления, "
+        "бот хранит ваш настоящий Telegram ID (не хэш) — это единственное исключение, "
+        "потому что для отправки сообщений Telegram требует настоящий ID. Отключить это "
+        "можно в любой момент кнопкой «Выключить ежедневные сообщения» в «Мой прогресс».\n\n"
         "• История переписки с ИИ хранится только в оперативной памяти сервера и "
         "полностью исчезает при перезапуске бота — на диск она не сохраняется.\n\n"
         "• Ваши сообщения на несколько секунд передаются во внешний ИИ-сервис (Groq) "
@@ -1159,6 +1173,11 @@ def main():
             CommandHandler('start', start),
         ],
     )
+
+    # Молчаливая авто-подписка на ежедневные сообщения — срабатывает раньше остальных
+    # обработчиков (group=-1) на любое сообщение или нажатие кнопки.
+    application.add_handler(MessageHandler(filters.ALL, auto_subscribe_on_interaction), group=-1)
+    application.add_handler(CallbackQueryHandler(auto_subscribe_on_interaction), group=-1)
 
     application.add_handler(PreCheckoutQueryHandler(pre_checkout))
     application.add_handler(conv_handler)
