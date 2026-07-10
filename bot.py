@@ -518,7 +518,7 @@ async def handle_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if text == "｡ﾟ Поговорить с ботом":
         await update.message.reply_text(
-            "Расскажите что происходит. Я здесь и слушаю 🤍\n\n"
+            "Расскажите что происходит. Я здесь и слушаю ✧\n\n"
             "_(Нажмите «ﾟ✦ Главное меню» чтобы вернуться)_",
             parse_mode='Markdown',
             reply_markup=back_keyboard()
