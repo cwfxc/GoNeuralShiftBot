@@ -191,9 +191,14 @@ def init_db():
         CREATE TABLE IF NOT EXISTS subscribers (
             user_id INTEGER PRIMARY KEY,
             subscribed_at TEXT,
-            timezone TEXT DEFAULT 'Europe/Moscow'
+            timezone TEXT DEFAULT 'Europe/Moscow',
+            active INTEGER DEFAULT 1
         )
     """)
+    # Миграция для баз, созданных до появления колонки active.
+    cols = [row[1] for row in conn.execute("PRAGMA table_info(subscribers)")]
+    if "active" not in cols:
+        conn.execute("ALTER TABLE subscribers ADD COLUMN active INTEGER DEFAULT 1")
     conn.commit()
     conn.close()
 
@@ -230,7 +235,7 @@ def db_delete_user_data(user_id: int):
     finally:
         conn.close()
     user_sessions.pop(user_id, None)
-    db_unsubscribe(user_id)  # «Удалить мои данные» должно отменять и подписку на рассылку
+    db_delete_subscriber_row(user_id)  # «Удалить мои данные» должно полностью стирать и подписку на рассылку
 
 def db_save_entry(user_id: int, entry: dict):
     user_hash = get_user_hash(user_id)
@@ -272,15 +277,28 @@ def db_subscribe(user_id: int, timezone: str = DEFAULT_TZ):
     conn = sqlite3.connect(DB_PATH)
     try:
         conn.execute("""
-            INSERT INTO subscribers (user_id, subscribed_at, timezone)
-            VALUES (?, ?, ?)
-            ON CONFLICT(user_id) DO UPDATE SET timezone = excluded.timezone
+            INSERT INTO subscribers (user_id, subscribed_at, timezone, active)
+            VALUES (?, ?, ?, 1)
+            ON CONFLICT(user_id) DO UPDATE SET timezone = excluded.timezone, active = 1
         """, (user_id, datetime.now().strftime("%d.%m.%Y %H:%M"), timezone))
         conn.commit()
     finally:
         conn.close()
 
 def db_unsubscribe(user_id: int):
+    """Явный отказ (кнопка «Выключить»). Строка НЕ удаляется, а помечается неактивной —
+    иначе тихая авто-подписка на следующем же сообщении сочла бы пользователя «новым» и
+    подписала бы обратно."""
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        conn.execute("UPDATE subscribers SET active=0 WHERE user_id=?", (user_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+def db_delete_subscriber_row(user_id: int):
+    """Право на удаление данных («Удалить мои данные») — в отличие от db_unsubscribe,
+    здесь строка удаляется полностью, а не просто деактивируется."""
     conn = sqlite3.connect(DB_PATH)
     try:
         conn.execute("DELETE FROM subscribers WHERE user_id=?", (user_id,))
@@ -288,7 +306,9 @@ def db_unsubscribe(user_id: int):
     finally:
         conn.close()
 
-def db_is_subscribed(user_id: int) -> bool:
+def db_has_ever_seen_subscriber(user_id: int) -> bool:
+    """Есть ли вообще строка в subscribers — используется авто-подпиской, чтобы не
+    трогать тех, кто уже когда-то явно отписался."""
     conn = sqlite3.connect(DB_PATH)
     try:
         row = conn.execute("SELECT 1 FROM subscribers WHERE user_id=?", (user_id,)).fetchone()
@@ -296,11 +316,19 @@ def db_is_subscribed(user_id: int) -> bool:
     finally:
         conn.close()
 
-def db_get_all_subscribers() -> list:
-    """Возвращает список (user_id, timezone) всех подписчиков — используется планировщиком."""
+def db_is_subscribed(user_id: int) -> bool:
     conn = sqlite3.connect(DB_PATH)
     try:
-        rows = conn.execute("SELECT user_id, timezone FROM subscribers").fetchall()
+        row = conn.execute("SELECT 1 FROM subscribers WHERE user_id=? AND active=1", (user_id,)).fetchone()
+        return row is not None
+    finally:
+        conn.close()
+
+def db_get_all_subscribers() -> list:
+    """Возвращает список (user_id, timezone) активных подписчиков — используется планировщиком."""
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        rows = conn.execute("SELECT user_id, timezone FROM subscribers WHERE active=1").fetchall()
     finally:
         conn.close()
     return rows
@@ -917,11 +945,14 @@ async def toggle_subscription_callback(update: Update, context: ContextTypes.DEF
 
 async def auto_subscribe_on_interaction(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Молча подписывает пользователя на ежедневные сообщения при первом же обращении
-    к боту — без отдельного согласия. Выключить всё ещё можно кнопкой в «Мой прогресс»."""
+    к боту — без отдельного согласия. Выключить всё ещё можно кнопкой в «Мой прогресс».
+
+    Проверяем именно «видели ли этого пользователя раньше», а не «подписан ли он сейчас» —
+    иначе явный отказ через кнопку тут же затирался бы следующим же сообщением боту."""
     user = update.effective_user
     if user is None:
         return
-    if not db_is_subscribed(user.id):
+    if not db_has_ever_seen_subscriber(user.id):
         db_subscribe(user.id)
         _schedule_user_today(context.job_queue, user.id)
 
