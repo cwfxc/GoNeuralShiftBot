@@ -15,7 +15,7 @@ from telegram.ext import (
     Application, CommandHandler, MessageHandler, CallbackQueryHandler,
     ConversationHandler, filters, ContextTypes, ApplicationHandlerStop
 )
-from messages_rotation import setup_user_schedule
+from messages_rotation import setup_user_schedule, set_sent_tracker, TZ as SCHEDULE_TZ
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -156,18 +156,26 @@ def init_db():
     # (в приватных чатах он равен user_id) — необратимый хэш для этого не годится.
     # Подписка на рассылку — единственная часть бота, где это применимо, и она полностью
     # опциональна (кнопка вкл/выкл), в отличие от анонимного по умолчанию дневника мыслей.
+    # last_morning / last_evening — дата (ГГГГ-ММ-ДД по МСК) последней отправки слота.
+    # Нужны, чтобы редеплой/рестарт среди дня не отправил сообщение повторно.
     conn.execute("""
         CREATE TABLE IF NOT EXISTS subscribers (
             user_id INTEGER PRIMARY KEY,
             subscribed_at TEXT,
             timezone TEXT DEFAULT 'Europe/Moscow',
-            active INTEGER DEFAULT 1
+            active INTEGER DEFAULT 1,
+            last_morning TEXT,
+            last_evening TEXT
         )
     """)
-    # Миграция для баз, созданных до появления колонки active.
+    # Миграции для баз, созданных до появления новых колонок.
     cols = [row[1] for row in conn.execute("PRAGMA table_info(subscribers)")]
     if "active" not in cols:
         conn.execute("ALTER TABLE subscribers ADD COLUMN active INTEGER DEFAULT 1")
+    if "last_morning" not in cols:
+        conn.execute("ALTER TABLE subscribers ADD COLUMN last_morning TEXT")
+    if "last_evening" not in cols:
+        conn.execute("ALTER TABLE subscribers ADD COLUMN last_evening TEXT")
     conn.commit()
     conn.close()
 
@@ -301,6 +309,34 @@ def db_get_all_subscribers() -> list:
     finally:
         conn.close()
     return rows
+
+def _today_str() -> str:
+    """Сегодняшняя дата по таймзоне рассылки (МСК), формат ГГГГ-ММ-ДД."""
+    return datetime.now(SCHEDULE_TZ).date().isoformat()
+
+def db_already_sent_today(user_id: int, slot: str) -> bool:
+    """Отправляли ли пользователю слот (morning/evening) сегодня — защита от дублей при рестарте."""
+    column = "last_morning" if slot == "morning" else "last_evening"
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        row = conn.execute(
+            f"SELECT {column} FROM subscribers WHERE user_id=?", (user_id,)
+        ).fetchone()
+    finally:
+        conn.close()
+    return bool(row and row[0] == _today_str())
+
+def db_mark_sent_today(user_id: int, slot: str):
+    """Отмечает, что слот отправлен сегодня."""
+    column = "last_morning" if slot == "morning" else "last_evening"
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        conn.execute(
+            f"UPDATE subscribers SET {column}=? WHERE user_id=?", (_today_str(), user_id)
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 # =====================
 # IN-MEMORY (chat history only)
@@ -1180,6 +1216,10 @@ def main():
 
     application.add_handler(PreCheckoutQueryHandler(pre_checkout))
     application.add_handler(conv_handler)
+
+    # Регистрируем в модуле рассылки трекер «уже отправлено сегодня» (на основе БД) —
+    # чтобы редеплой/рестарт среди дня не отправил сообщение повторно.
+    set_sent_tracker(db_already_sent_today, db_mark_sent_today)
 
     # Восстановление рассылки после рестарта: run_once-джобы теряются при перезапуске
     # процесса (Railway перезапускает при деплое), поэтому при старте заново планируем

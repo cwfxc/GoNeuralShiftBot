@@ -134,39 +134,72 @@ def random_time_in_window(h1, m1, h2, m2):
     return datetime.time(minute // 60, minute % 60, tzinfo=TZ)
 
 
-async def send_morning(context):
-    chat_id = context.job.chat_id
-    text = get_next_message(chat_id, "morning")
-    await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=_reply_markup_for(text))
-    schedule_daily_message(context.job_queue, chat_id, "morning")  # перепланируем на завтра
+# --- защита от повторной отправки в один день ---
+# bot.py регистрирует сюда две функции работы с БД (см. set_sent_tracker):
+#   _already_sent_today(chat_id, slot) -> bool  — отправляли ли этот слот сегодня;
+#   _mark_sent_today(chat_id, slot)             — отметить, что отправили сегодня.
+# Нужно, чтобы редеплой/рестарт среди дня не отправил сообщение повторно.
+_already_sent_today = None
+_mark_sent_today = None
 
 
-async def send_evening(context):
-    chat_id = context.job.chat_id
-    text = get_next_message(chat_id, "evening")
-    await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=_reply_markup_for(text))
-    schedule_daily_message(context.job_queue, chat_id, "evening")
+def set_sent_tracker(already_sent, mark_sent):
+    global _already_sent_today, _mark_sent_today
+    _already_sent_today = already_sent
+    _mark_sent_today = mark_sent
 
 
-def schedule_daily_message(job_queue, chat_id, slot):
-    # run_once вместо run_daily, чтобы время каждый день было разным
-    if slot == "morning":
-        window, callback = MORNING_WINDOW, send_morning
-    else:
-        window, callback = EVENING_WINDOW, send_evening
+def _schedule(job_queue, chat_id, slot, force_tomorrow):
+    """Планирует одну отправку слота. force_tomorrow=True — всегда на завтра
+    (используется после отправки: иначе новое случайное время могло бы выпасть
+    позже сегодня и сообщение пришло бы повторно в тот же день)."""
+    window = MORNING_WINDOW if slot == "morning" else EVENING_WINDOW
+    callback = send_morning if slot == "morning" else send_evening
 
     t = random_time_in_window(*window)
     now = datetime.datetime.now(TZ)
     target = now.replace(hour=t.hour, minute=t.minute, second=0, microsecond=0)
-    if target <= now:
+    if force_tomorrow or target <= now:
         target += datetime.timedelta(days=1)
 
     job_queue.run_once(callback, when=target, chat_id=chat_id, name=f"{slot}_{chat_id}")
 
 
+def schedule_daily_message(job_queue, chat_id, slot):
+    """Совместимость: планирует слот на сегодня (если окно ещё впереди) или на завтра."""
+    _schedule(job_queue, chat_id, slot, force_tomorrow=False)
+
+
+async def _run_slot(context, slot):
+    chat_id = context.job.chat_id
+    # Дедуп: если сегодня этот слот уже отправляли (например, после редеплоя) —
+    # не дублируем, просто планируем следующую отправку на завтра.
+    if _already_sent_today and _already_sent_today(chat_id, slot):
+        _schedule(context.job_queue, chat_id, slot, force_tomorrow=True)
+        return
+    text = get_next_message(chat_id, slot)
+    await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=_reply_markup_for(text))
+    if _mark_sent_today:
+        _mark_sent_today(chat_id, slot)
+    # Следующая отправка — ВСЕГДА на завтра.
+    _schedule(context.job_queue, chat_id, slot, force_tomorrow=True)
+
+
+async def send_morning(context):
+    await _run_slot(context, "morning")
+
+
+async def send_evening(context):
+    await _run_slot(context, "evening")
+
+
 def setup_user_schedule(job_queue, chat_id):
-    # вызывать при /start, старые джобы убираем чтобы не задвоились
+    # Вызывать при подписке и при восстановлении после рестарта.
+    # Старые джобы убираем, чтобы не задвоились.
     for slot in ("morning", "evening"):
         for job in job_queue.get_jobs_by_name(f"{slot}_{chat_id}"):
             job.schedule_removal()
-        schedule_daily_message(job_queue, chat_id, slot)
+        # Если сегодня слот уже отправляли (рестарт среди дня) — планируем на завтра,
+        # иначе — на сегодня (если окно ещё впереди) или на завтра.
+        already = bool(_already_sent_today and _already_sent_today(chat_id, slot))
+        _schedule(job_queue, chat_id, slot, force_tomorrow=already)
