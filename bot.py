@@ -21,6 +21,12 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
+# Приглушаем шумные сторонние логгеры. Важно: httpx на уровне INFO пишет полный URL
+# запроса к Telegram, а в нём — токен бота; поднимаем порог до WARNING, чтобы токен
+# не попадал в логи. Оставляем только предупреждения и ошибки.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("apscheduler").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
