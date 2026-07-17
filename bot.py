@@ -1225,8 +1225,16 @@ def main():
     # процесса (Railway перезапускает при деплое), поэтому при старте заново планируем
     # утро/вечер для каждого подписчика из БД. Само перепланирование на последующие дни
     # делают колбэки send_morning/send_evening внутри messages_rotation.py.
+    #
+    # ВАЖНО: при старте НЕ досылаем сегодняшние слоты — помечаем оба как отправленные
+    # сегодня, чтобы setup_user_schedule запланировал их на завтра. Это защита от дублей:
+    # иначе редеплой среди дня мог бы прислать сообщение ещё раз. Рассылка возобновляется
+    # со следующего дня. (Новых подписчиков это не касается — они подписываются через
+    # кнопку и получают сегодняшние слоты штатно.)
     for sub_user_id, _sub_timezone in db_get_all_subscribers():
         try:
+            db_mark_sent_today(sub_user_id, "morning")
+            db_mark_sent_today(sub_user_id, "evening")
             setup_user_schedule(application.job_queue, sub_user_id)
         except Exception as e:
             logger.error(f"Не удалось восстановить расписание для {sub_user_id}: {e}")
