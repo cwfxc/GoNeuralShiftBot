@@ -5,21 +5,17 @@ import tempfile
 import sqlite3
 import hashlib
 import json
-import random
 from collections import OrderedDict
 from telegram.ext import PreCheckoutQueryHandler
-from datetime import datetime, time as dt_time
-try:
-    from zoneinfo import ZoneInfo
-except ImportError:  # Python <3.9 fallback
-    from backports.zoneinfo import ZoneInfo
+from datetime import datetime
 from telegram import LabeledPrice
 from groq import Groq
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, CallbackQueryHandler,
-    ConversationHandler, filters, ContextTypes
+    ConversationHandler, filters, ContextTypes, ApplicationHandlerStop
 )
+from messages_rotation import setup_user_schedule
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -63,37 +59,10 @@ COGNITIVE_DISTORTIONS = {
 # Техники дефузии основаны на ACT-протоколах:
 # Hayes, S. C. — "Acceptance and Commitment Therapy: An Experiential Approach to Behavior Change"
 # Harris, R. — "The Happiness Trap"
-# =====================
-# ЕЖЕДНЕВНЫЕ СООБЩЕНИЯ (подписка)
-# =====================
 
+# Таймзона по умолчанию для подписчиков (используется как значение колонки timezone в БД).
+# Само расписание утро/вечер и тексты сообщений вынесены в messages_rotation.py.
 DEFAULT_TZ = "Europe/Moscow"
-
-MORNING_WINDOW = (8, 0, 11, 0)   # с 8:00 до 11:00
-EVENING_WINDOW = (19, 0, 22, 0)  # с 19:00 до 22:00
-
-# Смесь рефлексивных вопросов (Padesky, Socratic Questioning) и заземлённых аффирмаций.
-# Аффирмации намеренно не превосходные ("я справлюсь со всем"), а опирающиеся на факты —
-# исследования (Wood, Perunovic & Lee, 2009) показывают, что слишком позитивные утверждения
-# могут не помогать, а иногда усиливать тревогу у людей со сниженной самооценкой.
-PROMPTS_BANK = [
-    "Какая мысль сегодня возвращалась чаще всего? Она тебе помогает или мешает?",
-    "Если бы сегодняшний день прошёл в согласии с тем, что для тебя важно — как бы он выглядел?",
-    "Есть что-то, что ты откладываешь из страха, а не потому что это правда не нужно?",
-    "Что бы ты сказал другу, если бы он оказался в твоей сегодняшней ситуации?",
-    "Какую мысль ты сегодня принял за факт, хотя это была просто мысль?",
-    "Что из происходящего сейчас под твоим контролем, а что — нет?",
-    "Если убрать оценку «хорошо/плохо» — что просто есть в твоём дне сегодня?",
-    "Ты уже сталкивался с трудным раньше. Это не гарантия на сегодня, но это факт о тебе.",
-    "Тебе не обязательно чувствовать себя готовым, чтобы начать.",
-    "Прогресс редко выглядит как прямая линия — трудный день не отменяет то, что уже пройдено.",
-    "Можно одновременно тревожиться и всё равно сделать шаг.",
-    "Ты не обязан справляться со всем сразу. Достаточно следующего маленького шага.",
-    "Даже если сегодня кажется, что всё стоит на месте — что-то внутри всё равно меняется.",
-]
-
-def get_random_prompt() -> str:
-    return random.choice(PROMPTS_BANK)
 
 DEFUSION_TECHNIQUES = {
     "｡ﾟ Листья на воде": (
@@ -350,7 +319,7 @@ def get_user_data(user_id):
             user_sessions.popitem(last=False)
     return user_sessions[user_id]
 
-async def get_ai_response(user_id, user_message, mode="chat", context_data=None):
+async def get_ai_response(user_id, user_message, mode="chat", context_data=None, extra_system=None):
     data = get_user_data(user_id)
 
     system_prompts = {
@@ -461,6 +430,10 @@ Columbia Suicide Severity Rating Scale, принцип прямого скрин
     }
 
     system = system_prompts.get(mode, system_prompts["chat"])
+    if extra_system:
+        # Дополняем системный промпт, НЕ заменяя его — так вся логика бережной реакции
+        # на тревожные сообщения из базового промпта продолжает действовать.
+        system = system + "\n\n" + extra_system
     messages = [{"role": "system", "content": system}]
 
     if mode == "chat":
@@ -877,45 +850,8 @@ async def handle_defusion_callback(update: Update, context: ContextTypes.DEFAULT
     return MAIN_MENU
 
 # === ЕЖЕДНЕВНЫЕ СООБЩЕНИЯ: ПЛАНИРОВЩИК ===
-
-def _random_time_in_window(window: tuple) -> tuple:
-    """Возвращает случайные (час, минута) внутри окна (h1, m1, h2, m2)."""
-    h1, m1, h2, m2 = window
-    start_minutes = h1 * 60 + m1
-    end_minutes = h2 * 60 + m2
-    chosen = random.randint(start_minutes, end_minutes)
-    return chosen // 60, chosen % 60
-
-def _schedule_user_today(job_queue, user_id: int, timezone: str = DEFAULT_TZ):
-    """Планирует утреннее и вечернее сообщение для одного пользователя на сегодня —
-    если окно уже прошло, просто пропускает его (сообщение придёт завтра по общему расписанию)."""
-    tz = ZoneInfo(timezone)
-    now = datetime.now(tz)
-
-    for window, label in ((MORNING_WINDOW, "morning"), (EVENING_WINDOW, "evening")):
-        h, m = _random_time_in_window(window)
-        run_at = now.replace(hour=h, minute=m, second=0, microsecond=0)
-        if run_at <= now:
-            continue
-        job_queue.run_once(
-            send_prompt_job,
-            when=run_at,
-            data={"user_id": user_id},
-            name=f"prompt_{user_id}_{label}_{run_at.date()}"
-        )
-
-async def send_prompt_job(context: ContextTypes.DEFAULT_TYPE):
-    user_id = context.job.data["user_id"]
-    try:
-        await context.bot.send_message(chat_id=user_id, text=get_random_prompt())
-    except Exception as e:
-        logger.error(f"Не удалось отправить сообщение подписчику {user_id}: {e}")
-
-async def schedule_all_subscribers_daily(context: ContextTypes.DEFAULT_TYPE):
-    """Запускается раз в сутки (00:05) — планирует новое случайное утреннее и вечернее
-    сообщение на сегодня для каждого подписчика."""
-    for user_id, timezone in db_get_all_subscribers():
-        _schedule_user_today(context.job_queue, user_id, timezone or DEFAULT_TZ)
+# Само расписание (утро/вечер, случайное время в окне, ротация без повторов) и тексты
+# сообщений живут в messages_rotation.py. Здесь — только подписка/восстановление.
 
 async def toggle_subscription_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -931,7 +867,7 @@ async def toggle_subscription_callback(update: Update, context: ContextTypes.DEF
         )
     else:
         db_subscribe(user_id)
-        _schedule_user_today(context.job_queue, user_id)
+        setup_user_schedule(context.job_queue, user_id)
         await query.message.reply_text(
             "🔔 Готово — буду присылать пару сообщений в день, утром и вечером, "
             "время каждый раз немного случайное.",
@@ -950,7 +886,62 @@ async def auto_subscribe_on_interaction(update: Update, context: ContextTypes.DE
         return
     if not db_has_ever_seen_subscriber(user.id):
         db_subscribe(user.id)
-        _schedule_user_today(context.job_queue, user.id)
+        setup_user_schedule(context.job_queue, user.id)
+
+# === ОТВЕТ НА ВОПРОС ДНЯ (кнопка «💬 Ответить» под утренними/вечерними вопросами) ===
+
+# Добавка к системному промпту режима "chat" — НЕ заменяет его, а дополняет, поэтому
+# вся логика бережной реакции на тревожные сообщения (<безопасность_уровни> в промпте "chat")
+# продолжает действовать и в этой ветке.
+REFLECTION_SYSTEM_SUFFIX = (
+    "Пользователь отвечает на рефлексивный вопрос дня: «{question}».\n"
+    "Отреагируй в духе ACT: валидируй сказанное, помоги углубить размышление — "
+    "максимум один уточняющий вопрос. Не оценивай ответ как правильный или неправильный, "
+    "не давай советов, если их не просят. Ответ короткий: 2–4 предложения. "
+    "Позволь разговору естественно завершиться — не втягивай пользователя в длинный диалог. "
+    "Если сообщение пользователя явно не связано с вопросом — просто ответь на него "
+    "как в обычном диалоге, не притягивай к вопросу."
+)
+
+async def reflect_answer_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Нажата кнопка «Ответить» под вопросом дня. Запоминаем текст самого вопроса
+    (из сообщения, к которому прикреплена кнопка) — так работает и ответ на старый вопрос."""
+    query = update.callback_query
+    await query.answer()
+    context.user_data["awaiting_reflection"] = query.message.text
+    await query.message.reply_text(
+        "Слушаю тебя. Напиши, что откликается — а если передумаешь, "
+        "просто продолжай общаться как обычно."
+    )
+
+async def reflection_reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Глобальный текстовый хендлер (group=-2). Если пользователь недавно нажал «Ответить»,
+    его следующее текстовое сообщение обрабатывается как ответ на вопрос дня и уходит в Groq
+    с дополнением к промпту. Режим живёт ровно одно сообщение (pop), затем — обычный диалог.
+
+    Приватность: текст ответа пользователя нигде не логируется."""
+    question = context.user_data.pop("awaiting_reflection", None)
+    if not question:
+        return  # обычное сообщение — пусть обрабатывается штатными хендлерами (conv handler)
+
+    user_id = update.effective_user.id
+    await update.message.chat.send_action("typing")
+    try:
+        reply = await get_ai_response(
+            user_id,
+            update.message.text,
+            mode="chat",
+            context_data={},
+            extra_system=REFLECTION_SYSTEM_SUFFIX.format(question=question),
+        )
+        await update.message.reply_text(reply)
+    except Exception as e:
+        logger.error(f"Groq error (reflection): {e}")  # логируем только факт ошибки, без текста
+        await update.message.reply_text(
+            "Что-то пошло не так. Попробуй ещё раз или просто продолжай общаться как обычно."
+        )
+    # Ответ обработан здесь — не пускаем это же сообщение в ConversationHandler.
+    raise ApplicationHandlerStop
 
 # === DONATE ===
 
@@ -1177,25 +1168,28 @@ def main():
         ],
     )
 
-    # Молчаливая авто-подписка на ежедневные сообщения — срабатывает раньше остальных
-    # обработчиков (group=-1) на любое сообщение или нажатие кнопки.
+    # Ответ на вопрос дня — самый приоритетный слой (group=-2): если пользователь нажал
+    # «Ответить», его следующий текст перехватывается здесь и не уходит в ConversationHandler.
+    application.add_handler(CallbackQueryHandler(reflect_answer_callback, pattern='^reflect_answer$'), group=-2)
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, reflection_reply_handler), group=-2)
+
+    # Молчаливая авто-подписка на ежедневные сообщения — срабатывает раньше conv-хендлера
+    # (group=-1) на любое сообщение или нажатие кнопки.
     application.add_handler(MessageHandler(filters.ALL, auto_subscribe_on_interaction), group=-1)
     application.add_handler(CallbackQueryHandler(auto_subscribe_on_interaction), group=-1)
 
     application.add_handler(PreCheckoutQueryHandler(pre_checkout))
     application.add_handler(conv_handler)
 
-    # Планировщик ежедневных сообщений:
-    # 1) каждый день в 00:05 по МСК заново раскидывает случайное утреннее/вечернее время
-    #    для всех текущих подписчиков;
-    # 2) сразу при старте бота досчитывает окна на сегодня — иначе после рестарта бота
-    #    в середине дня подписчики не получили бы сегодняшние сообщения.
-    application.job_queue.run_daily(
-        schedule_all_subscribers_daily,
-        time=dt_time(hour=0, minute=5, tzinfo=ZoneInfo(DEFAULT_TZ))
-    )
-    for sub_user_id, sub_timezone in db_get_all_subscribers():
-        _schedule_user_today(application.job_queue, sub_user_id, sub_timezone or DEFAULT_TZ)
+    # Восстановление рассылки после рестарта: run_once-джобы теряются при перезапуске
+    # процесса (Railway перезапускает при деплое), поэтому при старте заново планируем
+    # утро/вечер для каждого подписчика из БД. Само перепланирование на последующие дни
+    # делают колбэки send_morning/send_evening внутри messages_rotation.py.
+    for sub_user_id, _sub_timezone in db_get_all_subscribers():
+        try:
+            setup_user_schedule(application.job_queue, sub_user_id)
+        except Exception as e:
+            logger.error(f"Не удалось восстановить расписание для {sub_user_id}: {e}")
 
     print("🤖 GoNeuralShift запущен!")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
