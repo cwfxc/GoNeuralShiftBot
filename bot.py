@@ -1,4 +1,5 @@
 import os
+import re
 import asyncio
 import logging
 import tempfile
@@ -420,6 +421,22 @@ Columbia Suicide Severity Rating Scale, принцип прямого скрин
 и явно нуждается именно в разговоре — но не убирай эту опцию из виду.
 </безопасность_уровни>
 
+<инструменты>
+У тебя есть три структурированных инструмента, которые можно ПРЕДЛОЖИТЬ, когда это уместно:
+— «дневник» — пошагово разобрать конкретную ситуацию и мысль (подходит, когда есть чёткая ситуация,
+  которую хочется распутать по полочкам);
+— «сократ» — исследовать одну навязчивую мысль через вопросы (подходит, когда человек зациклился на
+  одной мысли-убеждении вроде «я ни на что не гожусь»);
+— «дефузия» — короткое упражнение, чтобы отстраниться от тяжёлой мысли, а не спорить с ней (подходит,
+  когда мысль слишком болезненна для разбора).
+Если по ходу разговора один из них действительно поможет — в САМОМ КОНЦЕ ответа добавь ровно одну метку
+в двойных квадратных скобках: [[дневник]], [[сократ]] или [[дефузия]]. Пользователь метку не увидит —
+она превратится в кнопку с предложением. Добавляй метку РЕДКО и только когда она к месту, не в каждом
+сообщении, и не чаще одной за раз. Сначала контакт и разговор — инструмент это лишь мягкое предложение.
+ВАЖНО: если человек в кризисе или ему остро плохо (уровень 2 или 3 выше) — НЕ предлагай инструменты и
+НЕ добавляй метку. Только бережный разговор и, если нужно, кризисная помощь.
+</инструменты>
+
 <формат>
 Максимум 2-3 предложения. Живой язык, никакого канцелярита.
 Никогда не используй слова: «безусловно», «конечно», «это важно», «я понимаю».
@@ -514,8 +531,11 @@ Columbia Suicide Severity Rating Scale, принцип прямого скрин
     reply = response.choices[0].message.content
 
     if mode == "chat":
+        # В историю кладём ответ без скрытой метки инструмента, чтобы модель не видела
+        # свои прошлые метки (сам возвращаемый текст остаётся с меткой — её разбирает вызывающий).
+        clean_reply = _TOOL_TAG_RE.sub("", reply).strip()
         data["history"].append({"role": "user", "content": user_message})
-        data["history"].append({"role": "assistant", "content": reply})
+        data["history"].append({"role": "assistant", "content": clean_reply})
         if len(data["history"]) > 20:
             data["history"] = data["history"][-20:]
 
@@ -539,13 +559,59 @@ async def _typing_delay(chat, text=None):
 # =====================
 
 def main_keyboard():
+    """Домашняя клавиатура. Главный экран — это разговор: человек просто пишет.
+    Инструменты (дневник/сократ/дефузия) спрятаны под «Упражнения и техники»."""
     keyboard = [
-        [KeyboardButton("｡ﾟ Поговорить с ботом"), KeyboardButton("✦ Дневник мыслей")],
-        [KeyboardButton("࿔ Сократовский диалог"), KeyboardButton("･ﾟ Дефузия")],
+        [KeyboardButton("🧰 Упражнения и техники")],
         [KeyboardButton("⊹ Мой прогресс"), KeyboardButton("ﾟ｡ Кризисная помощь")],
         [KeyboardButton("⭐ Поддержать проект")],
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+# Инструменты: единый источник — название кнопки, описание, callback, состояние запуска.
+TOOLS_MENU = [
+    ("💭 Дневник мыслей", "tool_diary",
+     "пошагово разобрать ситуацию и найти более сбалансированный взгляд"),
+    ("🧠 Сократовский диалог", "tool_socratic",
+     "исследовать одну навязчивую мысль через вопросы"),
+    ("🌊 Дефузия", "tool_defusion",
+     "упражнение, чтобы отстраниться от тяжёлой мысли"),
+]
+
+def tools_inline_keyboard():
+    return InlineKeyboardMarkup([[InlineKeyboardButton(title, callback_data=cb)]
+                                 for title, cb, _desc in TOOLS_MENU])
+
+# Контекстное предложение конкретного инструмента (одна инлайн-кнопка под ответом в чате).
+_OFFER_BUTTON = {
+    "diary": ("💭 Разобрать в дневнике", "tool_diary"),
+    "socratic": ("🧠 Исследовать эту мысль", "tool_socratic"),
+    "defusion": ("🌊 Упражнение на дистанцию", "tool_defusion"),
+}
+
+def offer_tool_keyboard(tool: str):
+    item = _OFFER_BUTTON.get(tool)
+    if not item:
+        return None
+    title, cb = item
+    return InlineKeyboardMarkup([[InlineKeyboardButton(title, callback_data=cb)]])
+
+# Скрытая метка инструмента, которую модель ставит в конце ответа. Бот её вырезает
+# (пользователь не видит) и превращает в кнопку-предложение.
+_TOOL_TAGS = {"дневник": "diary", "сократ": "socratic", "дефузия": "defusion"}
+_TOOL_TAG_RE = re.compile(r"\[\[\s*(дневник|сократ|дефузия)\s*\]\]", re.IGNORECASE)
+
+def _extract_tool_tag(text: str):
+    """Возвращает (текст_без_метки, tool|None). Если модель поставила метку —
+    вырезаем её из видимого текста."""
+    if not text:
+        return text, None
+    m = _TOOL_TAG_RE.search(text)
+    if not m:
+        return text.strip(), None
+    tool = _TOOL_TAGS[m.group(1).lower()]
+    clean = (text[:m.start()] + text[m.end():]).strip()
+    return clean, tool
 
 def distortions_keyboard(show_info=False):
     buttons = []
@@ -573,60 +639,66 @@ def back_keyboard():
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     db_increment_sessions(user.id)
+    context.user_data.clear()
 
     welcome = (
         f"Привет, {user.first_name} ✧\n\n"
         "Это пространство для работы с мыслями, что давят, "
         "крутятся по кругу или не дают покоя.\n\n"
-        "Я не терапевт и не замена живому человеку. Но я умею помогать "
-        "разбираться в мыслях, которые мешают — с помощью научно обоснованных техник.\n\n"
-        "Пишите что угодно. Я здесь ｡ﾟ"
+        "Я не терапевт и не замена живому человеку. Но я умею быть рядом и помогать "
+        "разбираться в том, что мешает.\n\n"
+        "Просто напишите, что у вас на душе — я здесь и слушаю ｡ﾟ\n"
+        "_(А если захочется структуры — под рукой «🧰 Упражнения и техники».)_"
     )
-    await update.message.reply_text(welcome, reply_markup=main_keyboard())
+    await update.message.reply_text(welcome, parse_mode='Markdown', reply_markup=main_keyboard())
     return MAIN_MENU
 
+async def _chat_and_reply(update: Update, context: ContextTypes.DEFAULT_TYPE, user_text: str):
+    """Один ход обычного разговора: ответ ИИ + (если модель предложила) кнопка-инструмент.
+    Используется и для текста, и для расшифрованного голоса на домашнем экране."""
+    user_id = update.effective_user.id
+    await update.message.chat.send_action("typing")
+    try:
+        reply = await get_ai_response(user_id, user_text, mode="chat", context_data={})
+    except Exception as e:
+        logger.error(f"Groq error: {e}")
+        await update.message.reply_text(
+            "Что-то пошло не так. Попробуйте ещё раз.", reply_markup=main_keyboard()
+        )
+        return
+    reply, tool = _extract_tool_tag(reply)
+    await _typing_delay(update.message.chat, reply)
+    offer = offer_tool_keyboard(tool) if tool else None
+    # Если предлагаем инструмент — отправляем инлайн-кнопку (нижняя клавиатура остаётся видимой).
+    # Иначе просто держим домашнюю клавиатуру.
+    await update.message.reply_text(reply, reply_markup=offer or main_keyboard())
+
 async def handle_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Домашний экран = разговор. Кнопки-меню открывают инструменты/прогресс/помощь/донат,
+    любой другой текст — это обычный разговор с ботом."""
     text = update.message.text
-    context.user_data.clear()
 
-    if text == "｡ﾟ Поговорить с ботом":
+    if text == "🧰 Упражнения и техники":
+        context.user_data.clear()
         await update.message.reply_text(
-            "Расскажите что происходит. Я здесь и слушаю ✧\n\n"
-            "_(Нажмите «ﾟ✦ Главное меню» чтобы вернуться)_",
+            "🧰 *Упражнения и техники*\n\n"
+            "Выберите, если хочется структуры:\n\n"
+            "💭 *Дневник мыслей* — пошагово разобрать ситуацию и найти более сбалансированный взгляд.\n\n"
+            "🧠 *Сократовский диалог* — исследовать одну навязчивую мысль через вопросы.\n\n"
+            "🌊 *Дефузия* — упражнение, чтобы отстраниться от тяжёлой мысли.\n\n"
+            "Или просто продолжайте писать — я рядом.",
             parse_mode='Markdown',
-            reply_markup=back_keyboard()
+            reply_markup=tools_inline_keyboard()
         )
-        return AI_CHAT
+        return MAIN_MENU
 
-    elif text == "✦ Дневник мыслей":
+    elif text == "ﾟ✦ Главное меню":
+        context.user_data.clear()
         await update.message.reply_text(
-            "📓 *Дневник мыслей*\n\n"
-            "Запишем ситуацию, эмоции и мысль — и найдём более сбалансированный взгляд.\n\n"
-            "Опишите ситуацию, которая вас беспокоит:",
-            parse_mode='Markdown',
-            reply_markup=back_keyboard()
+            "Я здесь, рядом. О чём хочешь поговорить? ｡ﾟ",
+            reply_markup=main_keyboard()
         )
-        return THOUGHT_DIARY_SITUATION
-
-    elif text == "࿔ Сократовский диалог":
-        await update.message.reply_text(
-            "🧠 *Сократовский диалог*\n\n"
-            "Напишите мысль, которую хотите исследовать.\n"
-            "_(Например: «Я никогда не справлюсь», «Все меня осуждают»)_",
-            parse_mode='Markdown',
-            reply_markup=back_keyboard()
-        )
-        context.user_data['mode'] = 'socratic'
-        return AI_CHAT
-
-    elif text == "･ﾟ Дефузия":
-        await update.message.reply_text(
-            "🌊 *Когнитивная дефузия*\n\n"
-            "Напишите мысль, которая вас беспокоит:",
-            parse_mode='Markdown',
-            reply_markup=back_keyboard()
-        )
-        return DEFUSION_THOUGHT
+        return MAIN_MENU
 
     elif text == "⊹ Мой прогресс":
         user_id = update.effective_user.id
@@ -673,19 +745,53 @@ async def handle_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(crisis, parse_mode='Markdown', reply_markup=main_keyboard())
         return MAIN_MENU
 
-    elif text == "ﾟ✦ Главное меню":
-        await update.message.reply_text("Главное меню:", reply_markup=main_keyboard())
-        return MAIN_MENU
-
     elif text == "⭐ Поддержать проект":
         return await donate(update, context)
 
     else:
-        await update.message.reply_text(
-            "Выберите из меню или нажмите «｡ﾟ Поговорить с ботом» чтобы просто написать что беспокоит.",
-            reply_markup=main_keyboard()
-        )
+        # Любой другой текст — это обычный разговор (главный режим бота).
+        await _chat_and_reply(update, context, text)
         return MAIN_MENU
+
+async def tool_launch_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Запуск инструмента из инлайн-кнопки (меню «Упражнения и техники» или контекстного
+    предложения в чате). Переводит разговор в соответствующий сценарий."""
+    query = update.callback_query
+    await query.answer()
+    tool = query.data  # tool_diary / tool_socratic / tool_defusion
+    # чистим черновики предыдущих сценариев
+    for k in ('td_situation', 'td_emotion', 'td_thought', 'td_distortion', 'td_reframe',
+              'td_emotion_after', 'mode', 'socratic_thought', 'defusion_thought'):
+        context.user_data.pop(k, None)
+
+    if tool == "tool_diary":
+        await query.message.reply_text(
+            "📓 *Дневник мыслей*\n\n"
+            "Запишем ситуацию, эмоции и мысль — и найдём более сбалансированный взгляд.\n\n"
+            "Опишите ситуацию, которая вас беспокоит:",
+            parse_mode='Markdown', reply_markup=back_keyboard()
+        )
+        return THOUGHT_DIARY_SITUATION
+
+    if tool == "tool_socratic":
+        context.user_data['mode'] = 'socratic'
+        await query.message.reply_text(
+            "🧠 *Сократовский диалог*\n\n"
+            "Напишите мысль, которую хотите исследовать.\n"
+            "_(Например: «Я никогда не справлюсь», «Все меня осуждают»)_",
+            parse_mode='Markdown', reply_markup=back_keyboard()
+        )
+        return AI_CHAT
+
+    if tool == "tool_defusion":
+        await query.message.reply_text(
+            "🌊 *Когнитивная дефузия*\n\n"
+            "Напишите мысль, которая вас беспокоит:",
+            parse_mode='Markdown', reply_markup=back_keyboard()
+        )
+        return DEFUSION_THOUGHT
+
+    return MAIN_MENU
 
 async def ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
@@ -978,9 +1084,8 @@ REFLECTION_SYSTEM_SUFFIX = (
 
 # Кнопки основного меню — на них выходим из режима рефлексии обратно в обычный поток бота.
 MENU_BUTTONS = {
-    "｡ﾟ Поговорить с ботом", "✦ Дневник мыслей", "࿔ Сократовский диалог",
-    "･ﾟ Дефузия", "⊹ Мой прогресс", "ﾟ｡ Кризисная помощь", "⭐ Поддержать проект",
-    "ﾟ✦ Главное меню",
+    "🧰 Упражнения и техники", "⊹ Мой прогресс", "ﾟ｡ Кризисная помощь",
+    "⭐ Поддержать проект", "ﾟ✦ Главное меню",
 }
 
 async def reflect_answer_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1208,17 +1313,20 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
         mode = context.user_data.get('mode', 'chat')
 
-        if mode == 'socratic' and not context.user_data.get('socratic_thought'):
-            context.user_data['socratic_thought'] = text
-
         if mode == 'socratic':
+            if not context.user_data.get('socratic_thought'):
+                context.user_data['socratic_thought'] = text
             context_data = {'thought': context.user_data.get('socratic_thought', text)}
             reply = await get_ai_response(user_id, text, mode='socratic', context_data=context_data)
+            await _typing_delay(update.message.chat, reply)
+            await update.message.reply_text(reply, reply_markup=back_keyboard())
         else:
+            # Обычный разговор голосом на домашнем экране — с возможным предложением инструмента.
             reply = await get_ai_response(user_id, text, mode='chat', context_data={})
-
-        await _typing_delay(update.message.chat, reply)
-        await update.message.reply_text(reply, reply_markup=back_keyboard())
+            reply, tool = _extract_tool_tag(reply)
+            await _typing_delay(update.message.chat, reply)
+            offer = offer_tool_keyboard(tool) if tool else None
+            await update.message.reply_text(reply, reply_markup=offer or main_keyboard())
 
     except Exception as e:
         logger.error(f"Voice error: {e}")
@@ -1257,6 +1365,7 @@ def main():
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_main_menu),
                 MessageHandler(filters.VOICE, handle_voice),
                 MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment),
+                CallbackQueryHandler(tool_launch_callback, pattern='^tool_'),
                 CallbackQueryHandler(donate_stars_callback, pattern='^donate_stars$'),
                 CallbackQueryHandler(show_diary_callback, pattern='^show_diary$'),
                 CallbackQueryHandler(delete_data_ask_callback, pattern='^delete_data_ask$'),
@@ -1267,6 +1376,7 @@ def main():
             AI_CHAT: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, ai_chat),
                 MessageHandler(filters.VOICE, handle_voice),
+                CallbackQueryHandler(tool_launch_callback, pattern='^tool_'),
             ],
             THOUGHT_DIARY_SITUATION: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, thought_diary_emotion),
