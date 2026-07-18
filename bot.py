@@ -14,7 +14,8 @@ from groq import Groq
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, CallbackQueryHandler,
-    ConversationHandler, filters, ContextTypes, ApplicationHandlerStop
+    ConversationHandler, filters, ContextTypes, ApplicationHandlerStop,
+    PicklePersistence
 )
 from messages_rotation import setup_user_schedule, set_sent_tracker, TZ as SCHEDULE_TZ
 
@@ -996,23 +997,10 @@ async def reflect_answer_callback(update: Update, context: ContextTypes.DEFAULT_
         reply_markup=back_keyboard(),
     )
 
-async def reflection_reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Глобальный текстовый хендлер (group=-2). Пока включён режим рефлексии, каждое
-    текстовое сообщение пользователя идёт в Groq как продолжение разговора о вопросе дня.
-    Режим НЕ одноразовый: выход — только по кнопке меню (см. MENU_BUTTONS).
-
-    Приватность: текст ответов пользователя нигде не логируется."""
-    if not context.user_data.get("reflection_mode"):
-        return  # обычное сообщение — пусть обрабатывается штатными хендлерами (conv handler)
-
-    text = update.message.text
-    # Выход из режима: любая кнопка меню возвращает в обычный поток. НЕ перехватываем —
-    # даём ConversationHandler обработать нажатие штатно.
-    if text in MENU_BUTTONS:
-        context.user_data.pop("reflection_mode", None)
-        context.user_data.pop("reflection_question", None)
-        return
-
+async def _do_reflection_reply(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
+    """Отправляет ответ пользователя на вопрос дня в Groq и отвечает. Общая логика
+    для текстовых и голосовых сообщений в режиме рефлексии.
+    Приватность: текст ответа пользователя нигде не логируется."""
     question = context.user_data.get("reflection_question", "")
     user_id = update.effective_user.id
     await update.message.chat.send_action("typing")
@@ -1032,8 +1020,54 @@ async def reflection_reply_handler(update: Update, context: ContextTypes.DEFAULT
             "Что-то пошло не так. Попробуй ещё раз или нажми «ﾟ✦ Главное меню», чтобы вернуться.",
             reply_markup=back_keyboard(),
         )
+
+async def reflection_reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Глобальный текстовый хендлер (group=-2). Пока включён режим рефлексии, каждое
+    текстовое сообщение пользователя идёт в Groq как продолжение разговора о вопросе дня.
+    Режим НЕ одноразовый: выход — только по кнопке меню (см. MENU_BUTTONS)."""
+    if not context.user_data.get("reflection_mode"):
+        return  # обычное сообщение — пусть обрабатывается штатными хендлерами (conv handler)
+
+    text = update.message.text
+    # Выход из режима: любая кнопка меню возвращает в обычный поток. НЕ перехватываем —
+    # даём ConversationHandler обработать нажатие штатно.
+    if text in MENU_BUTTONS:
+        context.user_data.pop("reflection_mode", None)
+        context.user_data.pop("reflection_question", None)
+        return
+
+    await _do_reflection_reply(update, context, text)
     # Остаёмся в режиме рефлексии (многоходовой). Это сообщение обработано здесь —
     # не пускаем его в ConversationHandler.
+    raise ApplicationHandlerStop
+
+async def reflection_voice_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Голосовой хендлер (group=-2). В режиме рефлексии распознаёт голосовое и обрабатывает
+    его как ответ на вопрос дня — чтобы рефлексию можно было продолжать и голосом."""
+    if not context.user_data.get("reflection_mode"):
+        return  # не в рефлексии — пусть голос обрабатывается штатно (conv handler)
+
+    await update.message.chat.send_action("typing")
+    try:
+        voice = await update.message.voice.get_file()
+        text = await transcribe_voice(voice)
+    except Exception as e:
+        logger.error(f"Voice error (reflection): {e}")
+        await update.message.reply_text(
+            "Не удалось обработать голосовое. Попробуй написать текстом.",
+            reply_markup=back_keyboard(),
+        )
+        raise ApplicationHandlerStop
+
+    if not text.strip():
+        await update.message.reply_text(
+            "Не удалось распознать голосовое. Попробуй ещё раз или напиши текстом.",
+            reply_markup=back_keyboard(),
+        )
+        raise ApplicationHandlerStop
+
+    await update.message.reply_text(f"🎤 _{text}_", parse_mode='Markdown')
+    await _do_reflection_reply(update, context, text)
     raise ApplicationHandlerStop
 
 # === DONATE ===
@@ -1200,7 +1234,13 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     init_db()
 
-    application = Application.builder().token(TOKEN).build()
+    # Персистентность: состояние диалога и user_data (шаг сценария, режим рефлексии,
+    # прогресс дневника) сохраняются на диск и переживают перезапуск процесса.
+    # Файл кладём рядом с БД — на том же примонтированном томе /app/data.
+    persistence = PicklePersistence(
+        filepath=os.path.join(os.path.dirname(DB_PATH), "bot_state.pickle")
+    )
+    application = Application.builder().token(TOKEN).persistence(persistence).build()
 
     conv_handler = ConversationHandler(
         entry_points=[
@@ -1269,12 +1309,15 @@ def main():
             CommandHandler('cancel', cancel),
             CommandHandler('start', start),
         ],
+        name="main_conversation",
+        persistent=True,
     )
 
     # Ответ на вопрос дня — самый приоритетный слой (group=-2): если пользователь нажал
-    # «Ответить», его следующий текст перехватывается здесь и не уходит в ConversationHandler.
+    # «Ответить», его следующий текст/голос перехватывается здесь и не уходит в ConversationHandler.
     application.add_handler(CallbackQueryHandler(reflect_answer_callback, pattern='^reflect_answer$'), group=-2)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, reflection_reply_handler), group=-2)
+    application.add_handler(MessageHandler(filters.VOICE, reflection_voice_handler), group=-2)
 
     # Молчаливая авто-подписка на ежедневные сообщения — срабатывает раньше conv-хендлера
     # (group=-1) на любое сообщение или нажатие кнопки.
