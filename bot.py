@@ -1242,6 +1242,10 @@ def main():
             ],
             THOUGHT_DIARY_DISTORTION: [
                 CallbackQueryHandler(handle_distortion_callback, pattern='^dist_'),
+                # На шаге выбора искажения кнопка «Главное меню» (и любой текст/голос) тоже
+                # должна работать — иначе пользователь застревал бы, если не нажал инлайн-кнопку.
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_main_menu),
+                MessageHandler(filters.VOICE, handle_voice),
             ],
             THOUGHT_DIARY_REFRAME: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, thought_diary_reframe),
