@@ -56,16 +56,16 @@ ADMIN_ID = os.getenv("ADMIN_ID")
  DEFUSION_THOUGHT, DEFUSION_TECHNIQUE) = range(10)
 
 COGNITIVE_DISTORTIONS = {
-    "🔮 Чтение мыслей": "Убеждённость в том, что знаете мысли других без оснований.",
+    "🔮 Чтение мыслей": "Убеждённость в том, что знаешь мысли других без оснований.",
     "🌑 Катастрофизация": "Ожидание худшего исхода как неизбежного.",
     "🏷 Навешивание ярлыков": "Глобальный ярлык вместо описания конкретного поведения.",
     "🔬 Сверхобобщение": "Широкий вывод на основе единичного случая.",
     "👁 Фильтрация": "Фокус только на негативных деталях, игнорирование позитивных.",
     "⚫ Чёрно-белое мышление": "Видение всего в крайностях, без полутонов.",
     "⚡ Долженствование": "Жёсткие правила: 'должен', 'обязан', 'необходимо'.",
-    "🔗 Персонализация": "Ответственность за вещи вне вашей власти.",
+    "🔗 Персонализация": "Ответственность за вещи вне твоей власти.",
     "📉 Обесценивание": "Отвержение позитивного опыта как незначительного.",
-    "💭 Эмоциональное мышление": "Убеждённость в чём-то только потому, что так чувствуете.",
+    "💭 Эмоциональное мышление": "Убеждённость в чём-то только потому, что так чувствуешь.",
 }
 
 # Техники дефузии основаны на ACT-протоколах:
@@ -78,32 +78,32 @@ DEFAULT_TZ = "Europe/Moscow"
 
 DEFUSION_TECHNIQUES = {
     "｡ﾟ Листья на воде": (
-        "Устройтесь поудобнее. Можно закрыть глаза, если хочется.\n\n"
-        "Представьте тихий ручей — не обязательно красивый, просто спокойный. "
+        "Устройся поудобнее. Можно закрыть глаза, если хочется.\n\n"
+        "Представь тихий ручей — не обязательно красивый, просто спокойный. "
         "По воде медленно плывут листья.\n\n"
-        "Возьмите эту мысль — ту самую — и просто положите её на один из листьев. "
-        "Не пытайтесь её исправить или прогнать. Просто положите и смотрите, как уплывает.\n\n"
-        "Вы на берегу. Мысль — на воде. Между вами есть расстояние.\n\n"
-        "Побудьте здесь минуту. Это и есть практика — не избавиться от мысли, а не быть внутри неё."
+        "Возьми эту мысль — ту самую — и просто положи её на один из листьев. "
+        "Не пытайся её исправить или прогнать. Просто положи и смотри, как уплывает.\n\n"
+        "Ты на берегу. Мысль — на воде. Между вами есть расстояние.\n\n"
+        "Побудь здесь минуту. Это и есть практика — не избавиться от мысли, а не быть внутри неё."
     ),
     "✦ Наблюдатель": (
-        "Попробуйте вот что — это немного странно, но работает.\n\n"
-        "Представьте, что где-то внутри вас есть очень тихая, очень спокойная часть. "
-        "Она всегда была там. Она видела всё что с вами происходило — и просто наблюдала.\n\n"
+        "Попробуй вот что — это немного странно, но работает.\n\n"
+        "Представь, что где-то внутри тебя есть очень тихая, очень спокойная часть. "
+        "Она всегда была там. Она видела всё, что с тобой происходило — и просто наблюдала.\n\n"
         "Эта часть сейчас тоже видит эту мысль. Без паники, без оценок.\n\n"
-        "Попробуйте смотреть на мысль её глазами — как на облако, которое проплывает мимо.\n\n"
-        "Вы не обязаны в неё верить. Она просто есть — и это нормально."
+        "Попробуй смотреть на мысль её глазами — как на облако, которое проплывает мимо.\n\n"
+        "Не обязательно в неё верить. Она просто есть — и это нормально."
     ),
     "･ﾟ Персонаж": (
         "Маленький, но очень ощутимый сдвиг.\n\n"
-        "Попробуйте добавить в начало фразу:\n"
+        "Попробуй добавить в начало фразу:\n"
         "*«У меня есть мысль о том, что...»*\n\n"
         "Например:\n"
         "Было → «Я со всем этим не справлюсь»\n"
         "Стало → «У меня есть мысль о том, что я со всем этим не справлюсь»\n\n"
-        "Чувствуете разницу? Вы как будто делаете шаг назад и смотрите на мысль, "
-        "а не смотрите на мир через неё.\n\n"
-        "Мысль — это не факт. Это просто мысль. И вы — это не она."
+        "Чувствуешь разницу? Ты как будто делаешь шаг назад и смотришь на мысль, "
+        "а не смотришь на мир через неё.\n\n"
+        "Мысль — это не факт. Это просто мысль. И ты — это не она."
     ),
 }
 
@@ -411,8 +411,8 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if not ADMIN_ID:
         await update.message.reply_text(
-            f"ADMIN_ID не задан. Ваш Telegram ID: {user_id}\n"
-            "Задайте переменную ADMIN_ID в Railway этим числом, чтобы включить /stats."
+            f"ADMIN_ID не задан. Твой Telegram ID: {user_id}\n"
+            "Задай переменную ADMIN_ID в Railway этим числом, чтобы включить /stats."
         )
         return
     if str(user_id) != str(ADMIN_ID):
@@ -717,7 +717,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Привет, {user.first_name} ✧\n\n"
         "Здесь можно выгрузить то, что крутится в голове, — "
         "и вместе посмотреть на это спокойнее.\n\n"
-        "Расскажите, с чем пришли — или выберите технику в меню, "
+        "Расскажи, что тебя привело — или выбери технику в меню, "
         "если проще начать оттуда.\n\n"
         "Я бот, не терапевт. Но я рядом в любой момент, чтобы вместе разобраться."
     )
@@ -734,7 +734,7 @@ async def _chat_and_reply(update: Update, context: ContextTypes.DEFAULT_TYPE, us
     except Exception as e:
         logger.error(f"Groq error: {e}")
         await update.message.reply_text(
-            "Что-то пошло не так. Попробуйте ещё раз.", reply_markup=main_keyboard()
+            "Что-то пошло не так. Попробуй ещё раз.", reply_markup=main_keyboard()
         )
         return
     reply, tool = _extract_tool_tag(reply)
@@ -764,7 +764,7 @@ async def handle_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif text == "ﾟ✦ Главное меню":
         context.user_data.clear()
         await update.message.reply_text(
-            "Я здесь, рядом. О чём хочешь поговорить? ｡ﾟ",
+            "Я здесь. О чём хочешь поговорить? ｡ﾟ",
             reply_markup=main_keyboard()
         )
         return MAIN_MENU
@@ -775,7 +775,7 @@ async def handle_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         sessions = db_get_sessions(user_id)
 
         text_progress = (
-            f"📊 *Ваш прогресс*\n\n"
+            f"📊 *Твой прогресс*\n\n"
             f"• Сессий: {sessions}\n"
             f"• Записей в дневнике: {diary_count}\n\n"
         )
@@ -804,12 +804,12 @@ async def handle_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif text == "ﾟ｡ Кризисная помощь":
         crisis = (
             "🆘 *Кризисная помощь*\n\n"
-            "Если вы в критическом моменте прямо сейчас:\n\n"
+            "Если ты в критическом моменте прямо сейчас:\n\n"
             "🇷🇺 *Россия:* 8-800-2000-122 (бесплатно)\n"
             "🌍 *Международная помощь:* findahelpline.com\n\n"
             "Если есть мысли о самоповреждении — это медицинская ситуация. "
-            "Пожалуйста, позвоните на горячую линию.\n\n"
-            "Я здесь, если хотите поговорить 🤍"
+            "Пожалуйста, позвони на горячую линию.\n\n"
+            "Я здесь, если хочешь поговорить 🤍"
         )
         await update.message.reply_text(crisis, parse_mode='Markdown', reply_markup=main_keyboard())
         return MAIN_MENU
@@ -837,7 +837,7 @@ async def tool_launch_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         await query.message.reply_text(
             "📓 *Дневник мыслей*\n\n"
             "Запишем ситуацию, эмоции и мысль — и найдём более сбалансированный взгляд.\n\n"
-            "Опишите ситуацию, которая вас беспокоит:",
+            "Опиши ситуацию, которая тебя беспокоит:",
             parse_mode='Markdown', reply_markup=back_keyboard()
         )
         return THOUGHT_DIARY_SITUATION
@@ -846,7 +846,7 @@ async def tool_launch_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         context.user_data['mode'] = 'socratic'
         await query.message.reply_text(
             "🧠 *Сократовский диалог*\n\n"
-            "Напишите мысль, которую хотите исследовать.\n"
+            "Напиши мысль, которую хочешь исследовать.\n"
             "_(Например: «Я никогда не справлюсь», «Все меня осуждают»)_",
             parse_mode='Markdown', reply_markup=back_keyboard()
         )
@@ -855,7 +855,7 @@ async def tool_launch_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     if tool == "tool_defusion":
         await query.message.reply_text(
             "🌊 *Когнитивная дефузия*\n\n"
-            "Напишите мысль, которая вас беспокоит:",
+            "Напиши мысль, которая тебя беспокоит:",
             parse_mode='Markdown', reply_markup=back_keyboard()
         )
         return DEFUSION_THOUGHT
@@ -871,7 +871,7 @@ async def ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # mode='socratic' на домашнем экране увёл бы голосовые сообщения в сократ.
         context.user_data.clear()
         await update.message.reply_text(
-            "Я здесь, рядом. О чём хочешь поговорить? ｡ﾟ", reply_markup=main_keyboard()
+            "Я здесь. О чём хочешь поговорить? ｡ﾟ", reply_markup=main_keyboard()
         )
         return MAIN_MENU
 
@@ -896,7 +896,7 @@ async def ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Groq error: {e}")
         await update.message.reply_text(
-            "Что-то пошло не так. Попробуйте ещё раз или вернитесь в меню.",
+            "Что-то пошло не так. Попробуй ещё раз или вернись в меню.",
             reply_markup=back_keyboard()
         )
 
@@ -906,11 +906,11 @@ async def ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def thought_diary_emotion(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.text == "ﾟ✦ Главное меню":
-        await update.message.reply_text("Главное меню:", reply_markup=main_keyboard())
+        await update.message.reply_text("Я здесь. О чём хочешь поговорить? ｡ﾟ", reply_markup=main_keyboard())
         return MAIN_MENU
     context.user_data['td_situation'] = update.message.text
     await update.message.reply_text(
-        "Какие эмоции вы испытывали? И насколько сильно (0-100%)?\n\n"
+        "Какие эмоции при этом были — и насколько сильно (0-100%)?\n\n"
         "_(Например: тревога 70%, стыд 40%)_",
         parse_mode='Markdown',
         reply_markup=back_keyboard()
@@ -919,13 +919,13 @@ async def thought_diary_emotion(update: Update, context: ContextTypes.DEFAULT_TY
 
 async def thought_diary_thought(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.text == "ﾟ✦ Главное меню":
-        await update.message.reply_text("Главное меню:", reply_markup=main_keyboard())
+        await update.message.reply_text("Я здесь. О чём хочешь поговорить? ｡ﾟ", reply_markup=main_keyboard())
         return MAIN_MENU
     context.user_data['td_emotion'] = update.message.text
     await update.message.reply_text(
         "Что промелькнуло в голове в тот момент?\n\n"
-        "Попробуйте поймать *автоматическую мысль* — первую реакцию до анализа.\n\n"
-        "_(Например: «Я опять всё испортил», «Они точно думают плохо обо мне»)_",
+        "Попробуй поймать *автоматическую мысль* — первую реакцию до анализа.\n\n"
+        "_(Например: «Опять ничего не вышло», «Они точно думают обо мне плохо»)_",
         parse_mode='Markdown',
         reply_markup=back_keyboard()
     )
@@ -933,12 +933,12 @@ async def thought_diary_thought(update: Update, context: ContextTypes.DEFAULT_TY
 
 async def thought_diary_distortion(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.text == "ﾟ✦ Главное меню":
-        await update.message.reply_text("Главное меню:", reply_markup=main_keyboard())
+        await update.message.reply_text("Я здесь. О чём хочешь поговорить? ｡ﾟ", reply_markup=main_keyboard())
         return MAIN_MENU
     context.user_data['td_thought'] = update.message.text
     await update.message.reply_text(
-        "Когнитивные искажения — это автоматические ошибки мышления которые искажают реальность.\n\n"
-        "Узнаёте что-то похожее в своей мысли?",
+        "Когнитивные искажения — это автоматические ошибки мышления, которые искажают реальность.\n\n"
+        "Узнаёшь что-то похожее в своей мысли?",
         reply_markup=distortions_keyboard()
     )
     return THOUGHT_DIARY_DISTORTION
@@ -962,7 +962,7 @@ async def handle_distortion_callback(update: Update, context: ContextTypes.DEFAU
             "💭 *Эмоциональное мышление* — раз чувствую — значит правда"
         )
         await query.edit_message_text(
-            info_text + "\n\nТеперь выберите что похоже на вашу мысль:",
+            info_text + "\n\nТеперь выбери, что похоже на твою мысль:",
             parse_mode='Markdown',
             reply_markup=distortions_keyboard(show_info=True)
         )
@@ -1006,7 +1006,7 @@ async def handle_distortion_callback(update: Update, context: ContextTypes.DEFAU
     except Exception as e:
         logger.error(f"Groq error: {e}")
         await query.message.reply_text(
-            "Напишите альтернативную, более сбалансированную мысль:",
+            "Напиши альтернативную, более сбалансированную мысль:",
             reply_markup=back_keyboard()
         )
 
@@ -1016,7 +1016,7 @@ async def thought_diary_reframe(update: Update, context: ContextTypes.DEFAULT_TY
     """Пользователь прислал альтернативную мысль. Вместо немедленного сохранения —
     задаём шаг переоценки эмоции (reframe_check), опора: Judith S. Beck."""
     if update.message.text == "ﾟ✦ Главное меню":
-        await update.message.reply_text("Главное меню:", reply_markup=main_keyboard())
+        await update.message.reply_text("Я здесь. О чём хочешь поговорить? ｡ﾟ", reply_markup=main_keyboard())
         return MAIN_MENU
 
     user_id = update.effective_user.id
@@ -1042,7 +1042,7 @@ async def thought_diary_reframe(update: Update, context: ContextTypes.DEFAULT_TY
 async def thought_diary_emotion_recheck(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Финальный шаг: сохраняем запись вместе с переоценённой силой эмоции."""
     if update.message.text == "ﾟ✦ Главное меню":
-        await update.message.reply_text("Главное меню:", reply_markup=main_keyboard())
+        await update.message.reply_text("Я здесь. О чём хочешь поговорить? ｡ﾟ", reply_markup=main_keyboard())
         return MAIN_MENU
 
     user_id = update.effective_user.id
@@ -1072,12 +1072,12 @@ async def thought_diary_emotion_recheck(update: Update, context: ContextTypes.DE
 
 async def defusion_choose(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.text == "ﾟ✦ Главное меню":
-        await update.message.reply_text("Главное меню:", reply_markup=main_keyboard())
+        await update.message.reply_text("Я здесь. О чём хочешь поговорить? ｡ﾟ", reply_markup=main_keyboard())
         return MAIN_MENU
     context.user_data['defusion_thought'] = update.message.text
     await update.message.reply_text(
         "Можно попробовать любую технику — правильного выбора нет, "
-        "выбирайте по настроению:\n\n"
+        "выбирай по настроению:\n\n"
         "｡ﾟ *Листья на воде* — представить мысль плывущей по воде и мягко отпустить.\n\n"
         "✦ *Наблюдатель* — посмотреть на мысль со стороны, спокойно, без оценок.\n\n"
         "･ﾟ *Персонаж* — добавить «у меня есть мысль, что…» и почувствовать дистанцию.",
@@ -1091,19 +1091,17 @@ async def handle_defusion_callback(update: Update, context: ContextTypes.DEFAULT
     await query.answer()
 
     chosen_key = query.data[4:]
-    thought = context.user_data.get('defusion_thought', 'ваша мысль')
 
     full_key = next((k for k in DEFUSION_TECHNIQUES if k[:30] == chosen_key), chosen_key)
     technique_text = DEFUSION_TECHNIQUES.get(full_key, "")
 
     await query.edit_message_text(
         f"*{full_key}*\n\n"
-        f"Ваша мысль: _\"{thought}\"_\n\n"
         f"{technique_text}\n\n"
-        "Побудьте с этим 1-2 минуты. Как вы себя чувствуете после?",
+        "Побудь с этим 1-2 минуты. Как ты себя чувствуешь после?",
         parse_mode='Markdown'
     )
-    await query.message.reply_text("Главное меню:", reply_markup=main_keyboard())
+    await query.message.reply_text("Я здесь. О чём хочешь поговорить? ｡ﾟ", reply_markup=main_keyboard())
     return MAIN_MENU
 
 # === ЕЖЕДНЕВНЫЕ СООБЩЕНИЯ: ПЛАНИРОВЩИК ===
@@ -1175,8 +1173,7 @@ async def reflect_answer_callback(update: Update, context: ContextTypes.DEFAULT_
     context.user_data["reflection_mode"] = True
     context.user_data["reflection_question"] = query.message.text
     await query.message.reply_text(
-        "Слушаю тебя. Пиши, что откликается — можем говорить об этом столько, сколько нужно. "
-        "Когда захочешь вернуться, нажми «ﾟ✦ Главное меню».",
+        "Слушаю тебя ✧",
         reply_markup=back_keyboard(),
     )
 
@@ -1257,7 +1254,7 @@ async def reflection_voice_handler(update: Update, context: ContextTypes.DEFAULT
 
 async def donate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Спасибо что вы здесь ✦\n\n"
+        "Спасибо, что ты здесь ✦\n\n"
         "Поддержать проект можно двумя способами:\n\n"
         "💳 *СБП по номеру телефона:*\n"
         "`+79910234966`\n"
@@ -1274,7 +1271,7 @@ async def donate_stars_callback(update: Update, context: ContextTypes.DEFAULT_TY
     await query.answer()
     await query.message.reply_invoice(
         title="Поддержать GoNeuralShift",
-        description="Спасибо что вы здесь. Ваша поддержка помогает развивать проект ✦",
+        description="Спасибо, что ты здесь. Твоя поддержка помогает развивать проект ✦",
         payload="donate",
         provider_token="",
         currency="XTR",
@@ -1287,7 +1284,7 @@ async def pre_checkout(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Спасибо ⭐ Это очень важно и приятно.\nВы помогаете проекту жить дальше ✦",
+        "Спасибо ⭐ Это очень важно и приятно.\nТы помогаешь проекту жить дальше ✦",
         reply_markup=main_keyboard()
     )
     return MAIN_MENU
@@ -1304,7 +1301,7 @@ async def show_diary_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         await query.message.reply_text("Записей пока нет.", reply_markup=main_keyboard())
         return MAIN_MENU
 
-    text = "📋 *Ваши последние записи:*\n\n"
+    text = "📋 *Твои последние записи:*\n\n"
     for i, entry in enumerate(entries, 1):
         text += (
             f"*{i}. {entry.get('date', '')}*\n"
@@ -1339,18 +1336,18 @@ async def delete_data_execute_callback(update: Update, context: ContextTypes.DEF
     query = update.callback_query
     await query.answer()
     db_delete_user_data(query.from_user.id)
-    await query.edit_message_text("🗑 Все ваши данные удалены.")
-    await query.message.reply_text("Главное меню:", reply_markup=main_keyboard())
+    await query.edit_message_text("🗑 Все твои данные удалены.")
+    await query.message.reply_text("Я здесь. О чём хочешь поговорить? ｡ﾟ", reply_markup=main_keyboard())
     return MAIN_MENU
 
 async def delete_data_cancel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    await query.edit_message_text("Отменено. Ваши данные остались нетронуты.")
+    await query.edit_message_text("Отменено. Твои данные остались нетронуты.")
     return MAIN_MENU
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Главное меню:", reply_markup=main_keyboard())
+    await update.message.reply_text("Я здесь. О чём хочешь поговорить? ｡ﾟ", reply_markup=main_keyboard())
     return MAIN_MENU
 
 # === VOICE ===
@@ -1381,7 +1378,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if not text.strip():
             await update.message.reply_text(
-                "Не удалось распознать голосовое. Попробуйте говорить чётче или напишите текстом.",
+                "Не удалось распознать голосовое. Попробуй говорить чётче или напиши текстом.",
                 reply_markup=back_keyboard()
             )
             return
@@ -1409,7 +1406,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Voice error: {e}")
         await update.message.reply_text(
-            "Не удалось обработать голосовое. Попробуйте написать текстом.",
+            "Не удалось обработать голосовое. Попробуй написать текстом.",
             reply_markup=back_keyboard()
         )
 
