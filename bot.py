@@ -44,6 +44,9 @@ if not HASH_SECRET:
 
 groq_client = Groq(api_key=GROQ_API_KEY)
 
+# Telegram ID администратора (для команды /stats). Задаётся переменной окружения ADMIN_ID.
+ADMIN_ID = os.getenv("ADMIN_ID")
+
 # States
 # Добавлено новое состояние THOUGHT_DIARY_EMOTION_RECHECK — шаг переоценки эмоции
 # после переформулировки мысли (опора: Judith S. Beck, "Cognitive Behavior Therapy: Basics and Beyond")
@@ -346,6 +349,75 @@ def db_mark_sent_today(user_id: int, slot: str):
         conn.commit()
     finally:
         conn.close()
+
+def db_stats() -> str:
+    """Агрегированная статистика для админской команды /stats (без персональных данных)."""
+    conn = sqlite3.connect(DB_PATH)
+    def one(sql):
+        try:
+            return conn.execute(sql).fetchone()[0]
+        except Exception:
+            return 0
+    total = one("SELECT COUNT(*) FROM subscribers")        # все, кто хоть раз писал боту
+    started = one("SELECT COUNT(*) FROM users")             # делали /start
+    diary_users = one("SELECT COUNT(DISTINCT user_hash) FROM diary")
+    entries = one("SELECT COUNT(*) FROM diary")
+    active_subs = one("SELECT COUNT(*) FROM subscribers WHERE active=1")
+    try:
+        rows = conn.execute("SELECT user_hash, COUNT(*) FROM diary GROUP BY user_hash").fetchall()
+    except Exception:
+        rows = []
+    b1 = sum(1 for _h, n in rows if n == 1)
+    b24 = sum(1 for _h, n in rows if 2 <= n <= 4)
+    b5 = sum(1 for _h, n in rows if n >= 5)
+    now = datetime.now()
+    d7 = d30 = 0
+    dates = []
+    try:
+        for (ds,) in conn.execute("SELECT date FROM diary"):
+            try:
+                dt = datetime.strptime(ds, "%d.%m.%Y %H:%M")
+            except Exception:
+                continue
+            dates.append(dt)
+            age = (now - dt).days
+            if age <= 7:
+                d7 += 1
+            if age <= 30:
+                d30 += 1
+    except Exception:
+        pass
+    avg = one("SELECT COALESCE(AVG(sessions_count), 0) FROM users")
+    conn.close()
+
+    pct = (diary_users / total * 100) if total else 0
+    lines = [
+        "📊 *Статистика*",
+        f"Всего пользователей (взаимодействовали): {total}",
+        f"Из них делали /start: {started}",
+        f"Пользуются дневником: {diary_users} ({pct:.0f}% от всех)",
+        f"Всего записей: {entries}  (1: {b1} · 2–4: {b24} · 5+: {b5})",
+        f"Активных подписчиков рассылки: {active_subs}",
+    ]
+    if dates:
+        lines.append(f"Записей за 7 дней: {d7} · за 30 дней: {d30}")
+        lines.append(f"Период записей: {min(dates):%d.%m.%Y} – {max(dates):%d.%m.%Y}")
+    lines.append(f"Среднее число сессий на пользователя: {avg:.1f}")
+    return "\n".join(lines)
+
+async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Админская команда /stats. Доступна только пользователю с ID = ADMIN_ID.
+    Если ADMIN_ID не задан — подсказывает админу его собственный ID для настройки."""
+    user_id = update.effective_user.id
+    if not ADMIN_ID:
+        await update.message.reply_text(
+            f"ADMIN_ID не задан. Ваш Telegram ID: {user_id}\n"
+            "Задайте переменную ADMIN_ID в Railway этим числом, чтобы включить /stats."
+        )
+        return
+    if str(user_id) != str(ADMIN_ID):
+        return  # не админ — молча игнорируем
+    await update.message.reply_text(db_stats(), parse_mode='Markdown')
 
 # =====================
 # IN-MEMORY (chat history only)
@@ -1422,6 +1494,9 @@ def main():
         name="main_conversation",
         persistent=True,
     )
+
+    # Админская команда /stats — работает в любом состоянии.
+    application.add_handler(CommandHandler('stats', stats_command), group=-2)
 
     # Ответ на вопрос дня — самый приоритетный слой (group=-2): если пользователь нажал
     # «Ответить», его следующий текст/голос перехватывается здесь и не уходит в ConversationHandler.
