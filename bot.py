@@ -870,7 +870,12 @@ async def ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
 
     if text == "ﾟ✦ Главное меню":
-        await update.message.reply_text("Главное меню:", reply_markup=main_keyboard())
+        # Выходим из сократа домой — обязательно чистим режим/черновики, иначе залипший
+        # mode='socratic' на домашнем экране увёл бы голосовые сообщения в сократ.
+        context.user_data.clear()
+        await update.message.reply_text(
+            "Я здесь, рядом. О чём хочешь поговорить? ｡ﾟ", reply_markup=main_keyboard()
+        )
         return MAIN_MENU
 
     mode = context.user_data.get('mode', 'chat')
