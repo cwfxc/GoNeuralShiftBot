@@ -1206,6 +1206,11 @@ def main():
         entry_points=[
             CommandHandler('start', start),
             MessageHandler(filters.VOICE, handle_voice),
+            # Любой текст тоже входная точка: состояние диалога хранится в памяти и теряется
+            # при перезапуске процесса (Railway перезапускает при деплое). Без этого после
+            # рестарта кнопки меню «не работали» до повторного /start. Теперь любое сообщение
+            # заново входит в диалог через handle_main_menu.
+            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_main_menu),
         ],
         states={
             MAIN_MENU: [
