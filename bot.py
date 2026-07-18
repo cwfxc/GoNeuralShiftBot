@@ -5,6 +5,7 @@ import tempfile
 import sqlite3
 import hashlib
 import json
+import random
 from collections import OrderedDict
 from telegram.ext import PreCheckoutQueryHandler
 from datetime import datetime
@@ -361,7 +362,20 @@ def get_user_data(user_id):
             user_sessions.popitem(last=False)
     return user_sessions[user_id]
 
-async def get_ai_response(user_id, user_message, mode="chat", context_data=None, extra_system=None):
+# Инструкция про род обращения — добавляется ко всем промптам. Род определяется ПО КОНТЕКСТУ:
+# по тому, как пользователь говорит о себе. Пока не ясно — нейтрально, без мужского по умолчанию.
+GENDER_INSTRUCTION = (
+    "Про обращение к пользователю: определяй род пользователя по тому, как он сам говорит "
+    "о себе в переписке (например, «я устала», «я сделала», «я сама» → женский род; "
+    "«я устал», «я сделал», «я сам» → мужской), и обращайся к нему в этом роде. "
+    "Пока род из переписки не ясен, используй нейтральные формулировки без родовых окончаний "
+    "и не строй догадок. Никогда не используй мужской род по умолчанию. Если род уже проявился "
+    "в разговоре раньше — придерживайся его дальше."
+)
+
+
+async def get_ai_response(user_id, user_message, mode="chat", context_data=None,
+                          extra_system=None):
     data = get_user_data(user_id)
 
     system_prompts = {
@@ -472,6 +486,8 @@ Columbia Suicide Severity Rating Scale, принцип прямого скрин
     }
 
     system = system_prompts.get(mode, system_prompts["chat"])
+    # Гендерная инструкция применяется ко всем режимам.
+    system = GENDER_INSTRUCTION + "\n\n" + system
     if extra_system:
         # Дополняем системный промпт, НЕ заменяя его — так вся логика бережной реакции
         # на тревожные сообщения из базового промпта продолжает действовать.
@@ -503,6 +519,19 @@ Columbia Suicide Severity Rating Scale, принцип прямого скрин
             data["history"] = data["history"][-20:]
 
     return reply
+
+async def _typing_delay(chat, text=None):
+    """Показывает «печатает…» и делает паузу в несколько секунд перед ответом —
+    чтобы общение ощущалось естественнее, а не как мгновенный автоответ.
+    Длительность слегка зависит от длины ответа, но ограничена (индикатор
+    «печатает» в Telegram живёт ~5 секунд)."""
+    seconds = 2.5 if not text else min(4.0, 1.8 + len(text) / 80.0)
+    seconds += random.uniform(0.0, 0.6)
+    try:
+        await chat.send_action("typing")
+    except Exception:
+        pass
+    await asyncio.sleep(seconds)
 
 # =====================
 # KEYBOARDS
@@ -681,6 +710,7 @@ async def ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             reply = await get_ai_response(user_id, text, mode='chat', context_data={})
 
+        await _typing_delay(update.message.chat, reply)
         await update.message.reply_text(reply, reply_markup=back_keyboard())
     except Exception as e:
         logger.error(f"Groq error: {e}")
@@ -936,53 +966,74 @@ async def auto_subscribe_on_interaction(update: Update, context: ContextTypes.DE
 # вся логика бережной реакции на тревожные сообщения (<безопасность_уровни> в промпте "chat")
 # продолжает действовать и в этой ветке.
 REFLECTION_SYSTEM_SUFFIX = (
-    "Пользователь отвечает на рефлексивный вопрос дня: «{question}».\n"
-    "Отреагируй в духе ACT: валидируй сказанное, помоги углубить размышление — "
-    "максимум один уточняющий вопрос. Не оценивай ответ как правильный или неправильный, "
-    "не давай советов, если их не просят. Ответ короткий: 2–4 предложения. "
-    "Позволь разговору естественно завершиться — не втягивай пользователя в длинный диалог. "
-    "Если сообщение пользователя явно не связано с вопросом — просто ответь на него "
-    "как в обычном диалоге, не притягивай к вопросу."
+    "Пользователь размышляет над вопросом дня: «{question}».\n"
+    "Поддерживай разговор в духе ACT: валидируй сказанное, помогай мягко углублять "
+    "размышление — по одному вопросу за раз. Не оценивай ответ как правильный или "
+    "неправильный, не давай советов, если их не просят. Отвечай тепло и коротко "
+    "(2–4 предложения). Разговор может продолжаться столько, сколько нужно человеку — "
+    "не обрывай его и не подталкивай к завершению. Если сообщение пользователя явно "
+    "не связано с вопросом — просто ответь на него как в обычном диалоге."
 )
 
+# Кнопки основного меню — на них выходим из режима рефлексии обратно в обычный поток бота.
+MENU_BUTTONS = {
+    "｡ﾟ Поговорить с ботом", "✦ Дневник мыслей", "࿔ Сократовский диалог",
+    "･ﾟ Дефузия", "⊹ Мой прогресс", "ﾟ｡ Кризисная помощь", "⭐ Поддержать проект",
+    "ﾟ✦ Главное меню",
+}
+
 async def reflect_answer_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Нажата кнопка «Ответить» под вопросом дня. Запоминаем текст самого вопроса
-    (из сообщения, к которому прикреплена кнопка) — так работает и ответ на старый вопрос."""
+    """Нажата кнопка «Ответить» под вопросом дня. Запоминаем текст вопроса (из самого
+    сообщения) и включаем режим рефлексии — он держится, пока пользователь не выйдет
+    кнопкой меню, так что говорить об этом можно сколько нужно."""
     query = update.callback_query
     await query.answer()
-    context.user_data["awaiting_reflection"] = query.message.text
+    context.user_data["reflection_mode"] = True
+    context.user_data["reflection_question"] = query.message.text
     await query.message.reply_text(
-        "Слушаю тебя. Напиши, что откликается — а если передумаешь, "
-        "просто продолжай общаться как обычно."
+        "Слушаю тебя. Пиши, что откликается — можем говорить об этом столько, сколько нужно. "
+        "Когда захочешь вернуться, нажми «ﾟ✦ Главное меню».",
+        reply_markup=back_keyboard(),
     )
 
 async def reflection_reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Глобальный текстовый хендлер (group=-2). Если пользователь недавно нажал «Ответить»,
-    его следующее текстовое сообщение обрабатывается как ответ на вопрос дня и уходит в Groq
-    с дополнением к промпту. Режим живёт ровно одно сообщение (pop), затем — обычный диалог.
+    """Глобальный текстовый хендлер (group=-2). Пока включён режим рефлексии, каждое
+    текстовое сообщение пользователя идёт в Groq как продолжение разговора о вопросе дня.
+    Режим НЕ одноразовый: выход — только по кнопке меню (см. MENU_BUTTONS).
 
-    Приватность: текст ответа пользователя нигде не логируется."""
-    question = context.user_data.pop("awaiting_reflection", None)
-    if not question:
+    Приватность: текст ответов пользователя нигде не логируется."""
+    if not context.user_data.get("reflection_mode"):
         return  # обычное сообщение — пусть обрабатывается штатными хендлерами (conv handler)
 
+    text = update.message.text
+    # Выход из режима: любая кнопка меню возвращает в обычный поток. НЕ перехватываем —
+    # даём ConversationHandler обработать нажатие штатно.
+    if text in MENU_BUTTONS:
+        context.user_data.pop("reflection_mode", None)
+        context.user_data.pop("reflection_question", None)
+        return
+
+    question = context.user_data.get("reflection_question", "")
     user_id = update.effective_user.id
     await update.message.chat.send_action("typing")
     try:
         reply = await get_ai_response(
             user_id,
-            update.message.text,
+            text,
             mode="chat",
             context_data={},
             extra_system=REFLECTION_SYSTEM_SUFFIX.format(question=question),
         )
-        await update.message.reply_text(reply)
+        await _typing_delay(update.message.chat, reply)
+        await update.message.reply_text(reply, reply_markup=back_keyboard())
     except Exception as e:
         logger.error(f"Groq error (reflection): {e}")  # логируем только факт ошибки, без текста
         await update.message.reply_text(
-            "Что-то пошло не так. Попробуй ещё раз или просто продолжай общаться как обычно."
+            "Что-то пошло не так. Попробуй ещё раз или нажми «ﾟ✦ Главное меню», чтобы вернуться.",
+            reply_markup=back_keyboard(),
         )
-    # Ответ обработан здесь — не пускаем это же сообщение в ConversationHandler.
+    # Остаёмся в режиме рефлексии (многоходовой). Это сообщение обработано здесь —
+    # не пускаем его в ConversationHandler.
     raise ApplicationHandlerStop
 
 # === DONATE ===
@@ -1132,6 +1183,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             reply = await get_ai_response(user_id, text, mode='chat', context_data={})
 
+        await _typing_delay(update.message.chat, reply)
         await update.message.reply_text(reply, reply_markup=back_keyboard())
 
     except Exception as e:
