@@ -436,10 +436,12 @@ def get_user_data(user_id):
             user_sessions.popitem(last=False)
     return user_sessions[user_id]
 
-# Инструкция про род обращения — добавляется ко всем промптам. Род определяется ПО КОНТЕКСТУ:
-# по тому, как пользователь говорит о себе. Пока не ясно — нейтрально, без мужского по умолчанию.
+# Общие правила, добавляются ко ВСЕМ промптам: обращение на «ты», только русский язык,
+# и определение рода ПО КОНТЕКСТУ (как пользователь сам говорит о себе).
 GENDER_INSTRUCTION = (
-    "Про обращение к пользователю: определяй род пользователя по тому, как он сам говорит "
+    "Всегда обращайся к человеку на «ты», никогда на «вы». "
+    "Отвечай только на русском языке — без латиницы и иностранных слов. "
+    "Про род: определяй род пользователя по тому, как он сам говорит "
     "о себе в переписке (например, «я устала», «я сделала», «я сама» → женский род; "
     "«я устал», «я сделал», «я сам» → мужской), и обращайся к нему в этом роде. "
     "Пока род из переписки не ясен, используй нейтральные формулировки без родовых окончаний "
@@ -449,7 +451,7 @@ GENDER_INSTRUCTION = (
 
 
 async def get_ai_response(user_id, user_message, mode="chat", context_data=None,
-                          extra_system=None):
+                          extra_system=None, history=None):
     data = get_user_data(user_id)
 
     system_prompts = {
@@ -584,8 +586,13 @@ Columbia Suicide Severity Rating Scale, принцип прямого скрин
         system = system + "\n\n" + extra_system
     messages = [{"role": "system", "content": system}]
 
+    # История диалога. Для чата — общая история пользователя; для остальных многоходовых
+    # режимов (сократ) — переданная вызывающим. Без неё модель не помнит разговор и зацикливается.
     if mode == "chat":
         for msg in data["history"][-10:]:
+            messages.append(msg)
+    elif history:
+        for msg in history[-10:]:
             messages.append(msg)
 
     messages.append({"role": "user", "content": user_message})
@@ -830,7 +837,7 @@ async def tool_launch_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     tool = query.data  # tool_diary / tool_socratic / tool_defusion
     # чистим черновики предыдущих сценариев
     for k in ('td_situation', 'td_emotion', 'td_thought', 'td_distortion', 'td_reframe',
-              'td_emotion_after', 'mode', 'socratic_thought', 'defusion_thought'):
+              'td_emotion_after', 'mode', 'socratic_thought', 'socratic_history', 'defusion_thought'):
         context.user_data.pop(k, None)
 
     if tool == "tool_diary":
@@ -886,8 +893,16 @@ async def ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         if mode == 'socratic':
+            socratic_history = context.user_data.setdefault('socratic_history', [])
             context_data = {'thought': context.user_data.get('socratic_thought', text)}
-            reply = await get_ai_response(user_id, text, mode='socratic', context_data=context_data)
+            reply = await get_ai_response(
+                user_id, text, mode='socratic', context_data=context_data, history=socratic_history
+            )
+            # Копим историю сократовского диалога, иначе следующий ход снова «с нуля».
+            socratic_history.append({"role": "user", "content": text})
+            socratic_history.append({"role": "assistant", "content": reply})
+            if len(socratic_history) > 20:
+                del socratic_history[:-20]
         else:
             reply = await get_ai_response(user_id, text, mode='chat', context_data={})
 
@@ -1391,8 +1406,15 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if mode == 'socratic':
             if not context.user_data.get('socratic_thought'):
                 context.user_data['socratic_thought'] = text
+            socratic_history = context.user_data.setdefault('socratic_history', [])
             context_data = {'thought': context.user_data.get('socratic_thought', text)}
-            reply = await get_ai_response(user_id, text, mode='socratic', context_data=context_data)
+            reply = await get_ai_response(
+                user_id, text, mode='socratic', context_data=context_data, history=socratic_history
+            )
+            socratic_history.append({"role": "user", "content": text})
+            socratic_history.append({"role": "assistant", "content": reply})
+            if len(socratic_history) > 20:
+                del socratic_history[:-20]
             await _typing_delay(update.message.chat, reply)
             await update.message.reply_text(reply, reply_markup=back_keyboard())
         else:
