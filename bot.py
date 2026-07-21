@@ -68,6 +68,24 @@ COGNITIVE_DISTORTIONS = {
     "💭 Эмоциональное мышление": "Убеждённость в чём-то только потому, что так чувствуешь.",
 }
 
+# Те же искажения, названные словами самого человека, а не термином. Термин требует
+# теоретической подготовки, которой у пользователя нет; такую формулировку можно узнать
+# в себе, ничего не изучив. Используются на кнопках ручного выбора и как запасное
+# объяснение, если модель вернула только название без пояснения.
+# Формулировки намеренно без родовых окончаний.
+DISTORTION_PLAIN = {
+    "🔮 Чтение мыслей": "Я решаю, что думают обо мне другие",
+    "🌑 Катастрофизация": "Я жду худшего исхода",
+    "🏷 Навешивание ярлыков": "Я вешаю на себя ярлык",
+    "🔬 Сверхобобщение": "Один случай — значит, так всегда",
+    "👁 Фильтрация": "Я вижу только плохое",
+    "⚫ Чёрно-белое мышление": "Или идеально, или провал",
+    "⚡ Долженствование": "Слишком много «должен» и «обязан»",
+    "🔗 Персонализация": "Я виню себя в том, что не в моей власти",
+    "📉 Обесценивание": "Хорошее не считается",
+    "💭 Эмоциональное мышление": "Раз я так чувствую — значит, так и есть",
+}
+
 # Техники дефузии основаны на ACT-протоколах:
 # Hayes, S. C. — "Acceptance and Commitment Therapy: An Experiential Approach to Behavior Change"
 # Harris, R. — "The Happiness Trap"
@@ -553,6 +571,27 @@ Columbia Suicide Severity Rating Scale, принцип прямого скрин
 
 <формат>Максимум 2-3 предложения. Тепло, по-русски, без канцелярита.</формат>""",
 
+        "diary_distortion": f"""<роль>Ты — КПТ-терапевт.</роль>
+
+<контекст>
+Ситуация: {context_data.get('situation', '') if context_data else ''}
+Эмоции: {context_data.get('emotion', '') if context_data else ''}
+Автоматическая мысль: {context_data.get('thought', '') if context_data else ''}
+</контекст>
+
+<задача>
+Определи, какое ОДНО когнитивное искажение (классификация Burns, "Feeling Good") сильнее всего
+проявлено в автоматической мысли. Выбирай только из этого списка:
+{chr(10).join('— ' + k for k in COGNITIVE_DISTORTIONS)}
+</задача>
+
+<формат>
+Первая строка — РОВНО одно название из списка, без эмодзи, без кавычек, без пояснений.
+Со второй строки — 1-2 предложения: что именно в мысли человека на это указывает. Обращайся на «ты»,
+тепло, своими словами, без терминов. Это наблюдение, а не диагноз — не убеждай, что ты прав.
+Если ни одно искажение не проявлено отчётливо — первая строка РОВНО: НЕТ
+</формат>""",
+
         "reframe_check": """<роль>Ты — КПТ-терапевт.</роль>
 <задача>
 Пользователь только что сформулировал альтернативную, более сбалансированную мысль.
@@ -708,14 +747,66 @@ def _extract_tool_tag(text: str):
     clean = (text[:m.start()] + text[m.end():]).strip()
     return clean, tool
 
-def distortions_keyboard(show_info=False):
+def distortions_keyboard():
+    """Ручной выбор искажения — запасной путь, если догадка бота не подошла.
+    На кнопках стоят формулировки от первого лица, а не термины: узнать себя в
+    «Я жду худшего исхода» можно без подготовки, в «Катастрофизации» — нет.
+    В callback_data — индекс, а не название: короче и не зависит от текста."""
     buttons = []
-    if not show_info:
-        buttons.append([InlineKeyboardButton("· · · Что такое искажения? · · ·", callback_data="dist_info")])
-    for name in COGNITIVE_DISTORTIONS.keys():
-        buttons.append([InlineKeyboardButton(name, callback_data=f"dist_{name[:30]}")])
-    buttons.append([InlineKeyboardButton("❓ Не знаю / Пропустить", callback_data="dist_skip")])
+    for i, name in enumerate(COGNITIVE_DISTORTIONS):
+        emoji = name.split()[0]
+        buttons.append([InlineKeyboardButton(
+            f"{emoji} {DISTORTION_PLAIN[name]}", callback_data=f"dist_i{i}"
+        )])
+    buttons.append([InlineKeyboardButton("❓ Ничего из этого", callback_data="dist_skip")])
     return InlineKeyboardMarkup(buttons)
+
+def _norm_ru(text):
+    """Только буквы и пробелы, нижний регистр, ё→е — для устойчивого сравнения
+    названия искажения, которое вернула модель."""
+    t = (text or "").lower().replace("ё", "е")
+    return " ".join("".join(ch if ch.isalpha() or ch.isspace() else " " for ch in t).split())
+
+def _match_distortion(line):
+    """Название искажения из первой строки ответа модели → ключ COGNITIVE_DISTORTIONS."""
+    n = _norm_ru(line)
+    if not n or n.startswith("нет"):
+        return None
+    for key in COGNITIVE_DISTORTIONS:
+        if _norm_ru(key) in n:
+            return key
+    return None
+
+async def _guess_distortion(user_id, ud):
+    """Просит модель назвать искажение по записи дневника.
+    Возвращает (ключ_искажения, пояснение) или (None, None) — тогда показываем
+    ручной список. Ошибка модели не должна ломать сценарий."""
+    try:
+        raw = await get_ai_response(
+            user_id,
+            f"Автоматическая мысль: {ud.get('td_thought', '')}",
+            mode='diary_distortion',
+            context_data={
+                'situation': ud.get('td_situation', ''),
+                'emotion': ud.get('td_emotion', ''),
+                'thought': ud.get('td_thought', ''),
+            },
+        )
+    except Exception as e:
+        logger.error(f"Groq error (distortion guess): {e}")
+        return None, None
+
+    lines = [l.strip() for l in (raw or "").splitlines() if l.strip()]
+    if not lines:
+        return None, None
+    key = _match_distortion(lines[0])
+    if not key:
+        return None, None
+    # Пояснение модели необязательно: если его нет, берём формулировку от первого лица.
+    explanation = " ".join(lines[1:]).strip()
+    if not explanation:
+        explanation = f"Смотри, что я замечаю в этой мысли: {DISTORTION_PLAIN[key].lower()}."
+    return key, explanation
 
 def defusion_keyboard():
     buttons = []
@@ -971,10 +1062,32 @@ async def thought_diary_distortion(update: Update, context: ContextTypes.DEFAULT
         await update.message.reply_text("Я здесь. О чём хочешь поговорить? ｡ﾟ", reply_markup=main_keyboard())
         return MAIN_MENU
     context.user_data['td_thought'] = update.message.text
+
+    # Искажение предполагает бот, а не пользователь. Самодиагностика по списку терминов —
+    # работа терапевта: человек в тяжёлом состоянии не обязан знать классификацию Burns.
+    # Не согласиться можно всегда — кнопка «Не совсем» равноправна с «Да, похоже».
+    await update.message.chat.send_action("typing")
+    guess, explanation = await _guess_distortion(update.effective_user.id, context.user_data)
+
+    if not guess:
+        await update.message.reply_text(
+            "Посмотри — узнаёшь что-то из этого в своей мысли?",
+            reply_markup=distortions_keyboard()
+        )
+        return THOUGHT_DIARY_DISTORTION
+
+    context.user_data['td_distortion_guess'] = guess
+    term = guess.split(maxsplit=1)[1]  # название без эмодзи
     await update.message.reply_text(
-        "Когнитивные искажения — это автоматические ошибки мышления, которые искажают реальность.\n\n"
-        "Узнаёшь что-то похожее в своей мысли?",
-        reply_markup=distortions_keyboard()
+        f"{explanation}\n\n"
+        f"В КПТ это называют «{term.lower()}» — {COGNITIVE_DISTORTIONS[guess][0].lower()}"
+        f"{COGNITIVE_DISTORTIONS[guess][1:]}\n\n"
+        "Похоже на твой случай?",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("Да, похоже", callback_data="dist_yes")],
+            [InlineKeyboardButton("Не совсем — покажи другие", callback_data="dist_other")],
+            [InlineKeyboardButton("Пропустить этот шаг", callback_data="dist_skip")],
+        ])
     )
     return THOUGHT_DIARY_DISTORTION
 
@@ -982,36 +1095,36 @@ async def handle_distortion_callback(update: Update, context: ContextTypes.DEFAU
     query = update.callback_query
     await query.answer()
 
-    if query.data == "dist_info":
-        info_text = (
-            "💡 *Когнитивные искажения* — это автоматические ошибки мышления:\n\n"
-            "🔮 *Чтение мыслей* — думаю что знаю мысли других\n"
-            "🌑 *Катастрофизация* — жду худшего как неизбежного\n"
-            "🏷 *Навешивание ярлыков* — вешаю глобальный ярлык\n"
-            "🔬 *Сверхобобщение* — один случай = правило навсегда\n"
-            "👁 *Фильтрация* — вижу только плохое\n"
-            "⚫ *Чёрно-белое мышление* — всё или ничего\n"
-            "⚡ *Долженствование* — жёсткие правила «должен»\n"
-            "🔗 *Персонализация* — беру на себя чужую ответственность\n"
-            "📉 *Обесценивание* — хорошее не считается\n"
-            "💭 *Эмоциональное мышление* — раз чувствую — значит правда"
-        )
-        await query.edit_message_text(
-            info_text + "\n\nТеперь выбери, что похоже на твою мысль:",
-            parse_mode='Markdown',
-            reply_markup=distortions_keyboard(show_info=True)
+    action = query.data[5:]  # то, что после 'dist_'
+
+    # «Не совсем» — догадка не подошла, показываем ручной список.
+    if action == "other":
+        await query.edit_message_reply_markup(reply_markup=None)
+        await query.message.reply_text(
+            "Хорошо, тебе виднее. Может, ближе что-то из этого?",
+            reply_markup=distortions_keyboard()
         )
         return THOUGHT_DIARY_DISTORTION
 
-    chosen_key = query.data[5:]
-
-    if chosen_key == "skip":
+    if action == "skip":
         context.user_data['td_distortion'] = "Не определено"
         distortion_info = ""
     else:
-        full_key = next((k for k in COGNITIVE_DISTORTIONS if k[:30] == chosen_key), chosen_key)
+        if action == "yes":
+            full_key = context.user_data.get('td_distortion_guess')
+        else:
+            # dist_i<индекс> — ручной выбор из списка
+            keys = list(COGNITIVE_DISTORTIONS)
+            try:
+                full_key = keys[int(action[1:])]
+            except (ValueError, IndexError):
+                full_key = None
+        if not full_key:
+            # Догадка потерялась (например, после перезапуска) — шаг не блокируем.
+            full_key = "Не определено"
         context.user_data['td_distortion'] = full_key
-        distortion_info = f"\n\n💡 _{COGNITIVE_DISTORTIONS.get(full_key, '')}_"
+        distortion_info = (f"\n\n💡 _{COGNITIVE_DISTORTIONS[full_key]}_"
+                           if full_key in COGNITIVE_DISTORTIONS else "")
 
     situation = context.user_data.get('td_situation', '')
     emotion = context.user_data.get('td_emotion', '')
