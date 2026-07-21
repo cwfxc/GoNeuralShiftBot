@@ -53,7 +53,7 @@ ADMIN_ID = os.getenv("ADMIN_ID")
 (MAIN_MENU, AI_CHAT,
  THOUGHT_DIARY_SITUATION, THOUGHT_DIARY_EMOTION, THOUGHT_DIARY_THOUGHT,
  THOUGHT_DIARY_DISTORTION, THOUGHT_DIARY_REFRAME, THOUGHT_DIARY_EMOTION_RECHECK,
- DEFUSION_THOUGHT, DEFUSION_TECHNIQUE) = range(10)
+ DEFUSION_THOUGHT, DEFUSION_TECHNIQUE, DEFUSION_REFLECT) = range(11)
 
 COGNITIVE_DISTORTIONS = {
     "🔮 Чтение мыслей": "Убеждённость в том, что знаешь мысли других без оснований.",
@@ -851,9 +851,13 @@ async def tool_launch_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     query = update.callback_query
     await query.answer()
     tool = query.data  # tool_diary / tool_socratic / tool_defusion
-    # чистим черновики предыдущих сценариев
+    # чистим черновики предыдущих сценариев.
+    # reflection_mode здесь обязателен: он снимается только текстовыми кнопками меню,
+    # а инлайн-кнопка инструмента их минует. Залипший режим перехватывал бы шаги
+    # сценария в group=-2, и дневник было бы не пройти.
     for k in ('td_situation', 'td_emotion', 'td_thought', 'td_distortion', 'td_reframe',
-              'td_emotion_after', 'mode', 'socratic_thought', 'socratic_history', 'defusion_thought'):
+              'td_emotion_after', 'mode', 'socratic_thought', 'socratic_history', 'defusion_thought',
+              'reflection_mode', 'reflection_question'):
         context.user_data.pop(k, None)
 
     if tool == "tool_diary":
@@ -1126,13 +1130,30 @@ async def handle_defusion_callback(update: Update, context: ContextTypes.DEFAULT
     full_key = next((k for k in DEFUSION_TECHNIQUES if k[:30] == chosen_key), chosen_key)
     technique_text = DEFUSION_TECHNIQUES.get(full_key, "")
 
-    await query.edit_message_text(
-        f"*{full_key}*\n\n"
+    # Убираем кнопки выбора у исходного сообщения, чтобы техника не выбиралась повторно.
+    await query.edit_message_text(f"🌊 *{full_key}*", parse_mode='Markdown')
+    # Саму технику шлём отдельным сообщением: нужна нижняя клавиатура (edit_message_text
+    # её выставить не может), и вопрос «как ты себя чувствуешь» должен остаться последним.
+    await query.message.reply_text(
         f"{technique_text}\n\n"
         "Побудь с этим 1-2 минуты. Как ты себя чувствуешь после?",
-        parse_mode='Markdown'
+        parse_mode='Markdown',
+        reply_markup=back_keyboard()
     )
-    await query.message.reply_text("Я здесь. О чём хочешь поговорить? ｡ﾟ", reply_markup=main_keyboard())
+    return DEFUSION_REFLECT
+
+async def defusion_reflect(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Ответ на «как ты себя чувствуешь после упражнения». Раньше бот здесь сразу
+    перебивал себя фразой про главное меню — теперь ждёт ответ и отвечает на него."""
+    if update.message.text == "ﾟ✦ Главное меню":
+        context.user_data.clear()
+        await update.message.reply_text(
+            "Я здесь. О чём хочешь поговорить? ｡ﾟ", reply_markup=main_keyboard()
+        )
+        return MAIN_MENU
+
+    context.user_data.pop('defusion_thought', None)
+    await _chat_and_reply(update, context, update.message.text)
     return MAIN_MENU
 
 # === ЕЖЕДНЕВНЫЕ СООБЩЕНИЯ: ПЛАНИРОВЩИК ===
@@ -1525,6 +1546,11 @@ def main():
             DEFUSION_TECHNIQUE: [
                 CallbackQueryHandler(handle_defusion_callback, pattern='^def_'),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_main_menu),
+                MessageHandler(filters.VOICE, handle_voice),
+            ],
+            # Шаг «как ты себя чувствуешь после упражнения»: ждём ответ, а не бросаем в меню.
+            DEFUSION_REFLECT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, defusion_reflect),
                 MessageHandler(filters.VOICE, handle_voice),
             ],
         },
