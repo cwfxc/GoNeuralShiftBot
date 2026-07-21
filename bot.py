@@ -1165,22 +1165,22 @@ async def toggle_subscription_callback(update: Update, context: ContextTypes.DEF
     await query.answer()
     user_id = query.from_user.id
 
+    # reply_markup намеренно не задаём: кнопка доступна из любого места переписки,
+    # и подмена нижней клавиатуры выбросила бы пользователя из текущего сценария.
     if db_is_subscribed(user_id):
         db_unsubscribe(user_id)
         await query.message.reply_text(
             "🔕 Ежедневные сообщения выключены. Включить их снова можно в любой момент "
-            "в разделе «⊹ Мой прогресс».",
-            reply_markup=main_keyboard()
+            "в разделе «⊹ Мой прогресс»."
         )
     else:
         db_subscribe(user_id)
         setup_user_schedule(context.job_queue, user_id)
         await query.message.reply_text(
             "🔔 Готово — буду присылать пару сообщений в день, утром и вечером, "
-            "время каждый раз немного случайное.",
-            reply_markup=main_keyboard()
+            "время каждый раз немного случайное."
         )
-    return MAIN_MENU
+    # None — состояние диалога не меняем (см. комментарий выше).
 
 async def auto_subscribe_on_interaction(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Молча подписывает пользователя на ежедневные сообщения при первом же обращении
@@ -1350,8 +1350,8 @@ async def show_diary_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     entries = db_get_entries(user_id, limit=5)
 
     if not entries:
-        await query.message.reply_text("Записей пока нет.", reply_markup=main_keyboard())
-        return MAIN_MENU
+        await query.message.reply_text("Записей пока нет.")
+        return
 
     text = "📋 *Твои последние записи:*\n\n"
     for i, entry in enumerate(entries, 1):
@@ -1365,8 +1365,8 @@ async def show_diary_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
             text += f"Эмоция до/после: _{entry.get('emotion', '')}_ → _{entry.get('emotion_after', '')}_\n"
         text += "\n"
 
-    await query.message.reply_text(text, parse_mode='Markdown', reply_markup=main_keyboard())
-    return MAIN_MENU
+    # Показ записей — справочное действие: нижнюю клавиатуру и состояние не трогаем.
+    await query.message.reply_text(text, parse_mode='Markdown')
 
 # === PRIVACY / DATA CONTROL ===
 
@@ -1382,12 +1382,15 @@ async def delete_data_ask_callback(update: Update, context: ContextTypes.DEFAULT
             InlineKeyboardButton("Отмена", callback_data="delete_data_cancel"),
         ]])
     )
-    return MAIN_MENU
+    # Это только запрос подтверждения — состояние диалога не меняем.
 
 async def delete_data_execute_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     db_delete_user_data(query.from_user.id)
+    # Здесь состояние сбрасываем осознанно: после удаления данных незаконченный
+    # сценарий с черновиками в user_data продолжать нельзя.
+    context.user_data.clear()
     await query.edit_message_text("🗑 Все твои данные удалены.")
     await query.message.reply_text("Я здесь. О чём хочешь поговорить? ｡ﾟ", reply_markup=main_keyboard())
     return MAIN_MENU
@@ -1396,7 +1399,7 @@ async def delete_data_cancel_callback(update: Update, context: ContextTypes.DEFA
     query = update.callback_query
     await query.answer()
     await query.edit_message_text("Отменено. Твои данные остались нетронуты.")
-    return MAIN_MENU
+    # Состояние не меняем — пользователь возвращается туда, где был.
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Я здесь. О чём хочешь поговорить? ｡ﾟ", reply_markup=main_keyboard())
@@ -1484,6 +1487,23 @@ def main():
     )
     application = Application.builder().token(TOKEN).persistence(persistence).build()
 
+    # Инлайн-кнопки, которые должны работать из ЛЮБОГО места переписки: пользователь
+    # может прокрутить историю вверх и нажать кнопку под старым сообщением. Раньше они
+    # висели только в MAIN_MENU/AI_CHAT, и нажатие посреди сценария не делало ничего —
+    # даже индикатор загрузки в Telegram не гас, потому что query.answer() не вызывался.
+    # Глобальным слоем (group=-2) это не решается: оттуда нельзя вернуть состояние,
+    # а tool_* обязан переключать сценарий. Поэтому подмешиваем список в каждое состояние.
+    def common_callbacks():
+        return [
+            CallbackQueryHandler(tool_launch_callback, pattern='^tool_'),
+            CallbackQueryHandler(donate_stars_callback, pattern='^donate_stars$'),
+            CallbackQueryHandler(show_diary_callback, pattern='^show_diary$'),
+            CallbackQueryHandler(delete_data_ask_callback, pattern='^delete_data_ask$'),
+            CallbackQueryHandler(delete_data_execute_callback, pattern='^delete_data_execute$'),
+            CallbackQueryHandler(delete_data_cancel_callback, pattern='^delete_data_cancel$'),
+            CallbackQueryHandler(toggle_subscription_callback, pattern='^toggle_subscription$'),
+        ]
+
     conv_handler = ConversationHandler(
         entry_points=[
             CommandHandler('start', start),
@@ -1499,60 +1519,52 @@ def main():
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_main_menu),
                 MessageHandler(filters.VOICE, handle_voice),
                 MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment),
-                CallbackQueryHandler(tool_launch_callback, pattern='^tool_'),
-                CallbackQueryHandler(donate_stars_callback, pattern='^donate_stars$'),
-                CallbackQueryHandler(show_diary_callback, pattern='^show_diary$'),
-                CallbackQueryHandler(delete_data_ask_callback, pattern='^delete_data_ask$'),
-                CallbackQueryHandler(delete_data_execute_callback, pattern='^delete_data_execute$'),
-                CallbackQueryHandler(delete_data_cancel_callback, pattern='^delete_data_cancel$'),
-                CallbackQueryHandler(toggle_subscription_callback, pattern='^toggle_subscription$'),
-            ],
+            ] + common_callbacks(),
             AI_CHAT: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, ai_chat),
                 MessageHandler(filters.VOICE, handle_voice),
-                CallbackQueryHandler(tool_launch_callback, pattern='^tool_'),
-            ],
+            ] + common_callbacks(),
             THOUGHT_DIARY_SITUATION: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, thought_diary_emotion),
                 MessageHandler(filters.VOICE, handle_voice),
-            ],
+            ] + common_callbacks(),
             THOUGHT_DIARY_EMOTION: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, thought_diary_thought),
                 MessageHandler(filters.VOICE, handle_voice),
-            ],
+            ] + common_callbacks(),
             THOUGHT_DIARY_THOUGHT: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, thought_diary_distortion),
                 MessageHandler(filters.VOICE, handle_voice),
-            ],
+            ] + common_callbacks(),
             THOUGHT_DIARY_DISTORTION: [
                 CallbackQueryHandler(handle_distortion_callback, pattern='^dist_'),
                 # На шаге выбора искажения кнопка «Главное меню» (и любой текст/голос) тоже
                 # должна работать — иначе пользователь застревал бы, если не нажал инлайн-кнопку.
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_main_menu),
                 MessageHandler(filters.VOICE, handle_voice),
-            ],
+            ] + common_callbacks(),
             THOUGHT_DIARY_REFRAME: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, thought_diary_reframe),
                 MessageHandler(filters.VOICE, handle_voice),
-            ],
+            ] + common_callbacks(),
             THOUGHT_DIARY_EMOTION_RECHECK: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, thought_diary_emotion_recheck),
                 MessageHandler(filters.VOICE, handle_voice),
-            ],
+            ] + common_callbacks(),
             DEFUSION_THOUGHT: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, defusion_choose),
                 MessageHandler(filters.VOICE, handle_voice),
-            ],
+            ] + common_callbacks(),
             DEFUSION_TECHNIQUE: [
                 CallbackQueryHandler(handle_defusion_callback, pattern='^def_'),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_main_menu),
                 MessageHandler(filters.VOICE, handle_voice),
-            ],
+            ] + common_callbacks(),
             # Шаг «как ты себя чувствуешь после упражнения»: ждём ответ, а не бросаем в меню.
             DEFUSION_REFLECT: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, defusion_reflect),
                 MessageHandler(filters.VOICE, handle_voice),
-            ],
+            ] + common_callbacks(),
         },
         fallbacks=[
             CommandHandler('cancel', cancel),
