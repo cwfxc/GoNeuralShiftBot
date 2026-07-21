@@ -53,7 +53,8 @@ ADMIN_ID = os.getenv("ADMIN_ID")
 (MAIN_MENU, AI_CHAT,
  THOUGHT_DIARY_SITUATION, THOUGHT_DIARY_EMOTION, THOUGHT_DIARY_THOUGHT,
  THOUGHT_DIARY_DISTORTION, THOUGHT_DIARY_REFRAME, THOUGHT_DIARY_EMOTION_RECHECK,
- DEFUSION_THOUGHT, DEFUSION_TECHNIQUE, DEFUSION_REFLECT) = range(11)
+ DEFUSION_THOUGHT, DEFUSION_TECHNIQUE, DEFUSION_REFLECT,
+ THOUGHT_DIARY_MEANING) = range(12)
 
 COGNITIVE_DISTORTIONS = {
     "🔮 Чтение мыслей": "Убеждённость в том, что знаешь мысли других без оснований.",
@@ -580,17 +581,54 @@ Columbia Suicide Severity Rating Scale, принцип прямого скрин
 </контекст>
 
 <задача>
-Определи, какое ОДНО когнитивное искажение (классификация Burns, "Feeling Good") сильнее всего
-проявлено в автоматической мысли. Выбирай только из этого списка:
+Реши, есть ли в автоматической мысли когнитивное искажение — и только если есть, назови ОДНО,
+самое выраженное, из этого списка:
 {chr(10).join('— ' + k for k in COGNITIVE_DISTORTIONS)}
 </задача>
 
+<когда_искажения_НЕТ>
+Ответ «НЕТ» — такой же нормальный и частый результат, как название искажения. Многие тяжёлые мысли
+совершенно здоровы. Отвечай НЕТ, если верно хотя бы одно:
+— Реакция соразмерна тому, что реально произошло (событие действительно неприятное, а не додуманное).
+— Это моральный дискомфорт: человеку не по себе от того, что расходится с его ценностями. Стыд или
+  злость из-за чужого нечестного поступка — здоровая реакция совести, а НЕ ошибка мышления.
+— Нарушена граница человека, или речь о реальном конфликте, потере, несправедливости.
+— Человек описал ЧУВСТВО или ЖЕЛАНИЕ («мне некомфортно», «я не хочу здесь быть»), а не убеждение
+  о себе или мире. Проверять на искажение можно только утверждение, которое сопоставимо с фактами.
+Искажение — это интерпретация, выходящая ЗА пределы фактов. Если фактов достаточно, чтобы так
+себя чувствовать, искажения нет. Не подгоняй мысль под ярлык, чтобы дать ответ.
+</когда_искажения_НЕТ>
+
 <формат>
-Первая строка — РОВНО одно название из списка, без эмодзи, без кавычек, без пояснений.
-Со второй строки — 1-2 предложения: что именно в мысли человека на это указывает. Обращайся на «ты»,
-тепло, своими словами, без терминов. Это наблюдение, а не диагноз — не убеждай, что ты прав.
-Если ни одно искажение не проявлено отчётливо — первая строка РОВНО: НЕТ
+Первая строка — РОВНО одно название из списка, без эмодзи, без кавычек, без пояснений,
+либо РОВНО слово: НЕТ
+Со второй строки (только если назвал искажение) — 1-2 предложения о том, что именно в мысли на это
+указывает. Обращайся на «ты», тепло, своими словами.
+ЗАПРЕЩЕНО: пересказывать слова человека его же словами; оценивать его («ты не рассматриваешь…»,
+«ты не учитываешь…»); настаивать на своей правоте. Это наблюдение, которое легко отклонить.
 </формат>""",
+
+        "diary_no_distortion": f"""<роль>Ты — КПТ/ACT-терапевт.</роль>
+
+<контекст>
+Ситуация: {context_data.get('situation', '') if context_data else ''}
+Эмоции: {context_data.get('emotion', '') if context_data else ''}
+Мысль: {context_data.get('thought', '') if context_data else ''}
+</контекст>
+
+<задача>
+В этой записи когнитивного искажения нет: реакция человека соразмерна произошедшему.
+Признай чувство прямо и коротко — без «зато» и без утешений в духе «всё не так плохо».
+Затем задай ОДИН вопрос о том, что стоит за этим чувством: какая ценность оказалась задета или
+что человеку сейчас нужно.
+</задача>
+
+<запрещено>
+Предлагать переформулировать мысль или найти более сбалансированный взгляд — балансировать здесь
+нечего. Давать советы. Объяснять человеку его же чувства.
+</запрещено>
+
+<формат>2-3 предложения. Тепло, по-русски, без терминов.</формат>""",
 
         "reframe_check": """<роль>Ты — КПТ-терапевт.</роль>
 <задача>
@@ -1070,9 +1108,17 @@ async def thought_diary_distortion(update: Update, context: ContextTypes.DEFAULT
     guess, explanation = await _guess_distortion(update.effective_user.id, context.user_data)
 
     if not guess:
+        # Раньше здесь сразу открывался список — то есть та же самодиагностика, только
+        # с другой стороны. Отсутствие искажения — нормальный результат, и говорить о нём
+        # надо прямо: не каждая тяжёлая мысль искажена.
         await update.message.reply_text(
-            "Посмотри — узнаёшь что-то из этого в своей мысли?",
-            reply_markup=distortions_keyboard()
+            "Здесь я не вижу ошибки мышления — то, что ты описываешь, выглядит соразмерным тому, "
+            "что произошло.\n\n"
+            "Не каждую тяжёлую мысль нужно переубеждать.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("Идти дальше", callback_data="dist_none")],
+                [InlineKeyboardButton("Всё-таки посмотреть список", callback_data="dist_show")],
+            ])
         )
         return THOUGHT_DIARY_DISTORTION
 
@@ -1097,7 +1143,38 @@ async def handle_distortion_callback(update: Update, context: ContextTypes.DEFAU
 
     action = query.data[5:]  # то, что после 'dist_'
 
-    # «Не совсем» — догадка не подошла, показываем ручной список.
+    # Искажения нет — ведём по отдельной ветке: спрашивать «более сбалансированную мысль»
+    # здесь неуместно, балансировать нечего.
+    if action == "none":
+        context.user_data['td_distortion'] = "Искажения нет"
+        await query.edit_message_reply_markup(reply_markup=None)
+        try:
+            question = await get_ai_response(
+                query.from_user.id,
+                "Признай чувство и спроси, что за ним стоит",
+                mode='diary_no_distortion',
+                context_data={
+                    'situation': context.user_data.get('td_situation', ''),
+                    'emotion': context.user_data.get('td_emotion', ''),
+                    'thought': context.user_data.get('td_thought', ''),
+                },
+            )
+        except Exception as e:
+            logger.error(f"Groq error (no distortion): {e}")
+            question = ("Понятно, почему тебе было так. Что для тебя было важно в этот момент — "
+                        "что оказалось задето?")
+        await query.message.reply_text(question, reply_markup=back_keyboard())
+        return THOUGHT_DIARY_MEANING
+
+    # «Всё-таки посмотреть список» / «Не совсем» — показываем ручной выбор.
+    if action == "show":
+        await query.edit_message_reply_markup(reply_markup=None)
+        await query.message.reply_text(
+            "Хорошо, посмотри сама — узнаёшь что-то из этого?",
+            reply_markup=distortions_keyboard()
+        )
+        return THOUGHT_DIARY_DISTORTION
+
     if action == "other":
         await query.edit_message_reply_markup(reply_markup=None)
         await query.message.reply_text(
@@ -1187,6 +1264,22 @@ async def thought_diary_reframe(update: Update, context: ContextTypes.DEFAULT_TY
 
     return THOUGHT_DIARY_EMOTION_RECHECK
 
+async def thought_diary_meaning(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Ветка «искажения нет»: человек ответил, что за чувством стоит. Переформулирование
+    мысли здесь пропускаем — вместо него сохраняем то, что оказалось важно."""
+    if update.message.text == "ﾟ✦ Главное меню":
+        await update.message.reply_text("Я здесь. О чём хочешь поговорить? ｡ﾟ", reply_markup=main_keyboard())
+        return MAIN_MENU
+
+    context.user_data['td_meaning'] = update.message.text
+    # Вопрос статичный: формулировка reframe_check («после того как ты переформулировал мысль»)
+    # для этой ветки не подходит.
+    await update.message.reply_text(
+        "Как сейчас ощущается та эмоция, с которой всё началось — от 0 до 100%?",
+        reply_markup=back_keyboard()
+    )
+    return THOUGHT_DIARY_EMOTION_RECHECK
+
 async def thought_diary_emotion_recheck(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Финальный шаг: сохраняем запись вместе с переоценённой силой эмоции."""
     if update.message.text == "ﾟ✦ Главное меню":
@@ -1202,16 +1295,26 @@ async def thought_diary_emotion_recheck(update: Update, context: ContextTypes.DE
         "thought": context.user_data.get('td_thought', ''),
         "distortion": context.user_data.get('td_distortion', ''),
         "reframe": context.user_data.get('td_reframe', ''),
+        # Ветка «искажения нет» сохраняет не альтернативу, а то, что оказалось важно:
+        # подписывать это «альтернативой» было бы неверно по смыслу.
+        "meaning": context.user_data.get('td_meaning', ''),
         "emotion_after": context.user_data.get('td_emotion_after', ''),
     }
     db_save_entry(user_id, entry)
 
+    if entry['meaning']:
+        outcome = f"ヅ︎ Что оказалось важно: _{entry['meaning'][:150]}_"
+        closing = "Заметить, что именно было задето, — уже работа. Не всё нужно исправлять."
+    else:
+        outcome = f"ヅ︎ Альтернатива: _{entry['reframe'][:150]}_"
+        closing = "Отличная работа. Каждая такая запись постепенно меняет нейронные паттерны."
+
     summary = (
         "✓︎ *Запись сохранена*\n\n"
         f"♒︎ Исходная мысль: _{entry['thought'][:100]}_\n"
-        f"ヅ︎ Альтернатива: _{entry['reframe'][:150]}_\n"
+        f"{outcome}\n"
         f"↺ Эмоция до/после: _{entry['emotion']}_ → _{entry['emotion_after']}_\n\n"
-        "Отличная работа. Каждая такая запись постепенно меняет нейронные паттерны."
+        f"{closing}"
     )
     await update.message.reply_text(summary, parse_mode='Markdown', reply_markup=main_keyboard())
     return MAIN_MENU
@@ -1472,8 +1575,12 @@ async def show_diary_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
             f"*{i}. {entry.get('date', '')}*\n"
             f"Ситуация: _{entry.get('situation', '')[:80]}_\n"
             f"Мысль: _{entry.get('thought', '')[:80]}_\n"
-            f"Альтернатива: _{entry.get('reframe', '')[:80]}_\n"
         )
+        # Записи из ветки «искажения нет» хранят не альтернативу, а то, что было важно.
+        if entry.get('meaning'):
+            text += f"Что оказалось важно: _{entry['meaning'][:80]}_\n"
+        elif entry.get('reframe'):
+            text += f"Альтернатива: _{entry['reframe'][:80]}_\n"
         if entry.get('emotion_after'):
             text += f"Эмоция до/после: _{entry.get('emotion', '')}_ → _{entry.get('emotion_after', '')}_\n"
         text += "\n"
@@ -1671,6 +1778,11 @@ def main():
             DEFUSION_TECHNIQUE: [
                 CallbackQueryHandler(handle_defusion_callback, pattern='^def_'),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_main_menu),
+                MessageHandler(filters.VOICE, handle_voice),
+            ] + common_callbacks(),
+            # Ветка «искажения нет»: вместо переформулирования мысли — что оказалось важно.
+            THOUGHT_DIARY_MEANING: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, thought_diary_meaning),
                 MessageHandler(filters.VOICE, handle_voice),
             ] + common_callbacks(),
             # Шаг «как ты себя чувствуешь после упражнения»: ждём ответ, а не бросаем в меню.
