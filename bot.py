@@ -697,7 +697,7 @@ Columbia Suicide Severity Rating Scale, принцип прямого скрин
 
     reply = await _call()
     if reply:
-    reply = re.sub(r'<think>.*?</think>', '', reply, flags=re.DOTALL).strip()
+        reply = re.sub(r'<think>.*?</think>', '', reply, flags=re.DOTALL).strip()
     # Страховка: если модель сорвалась в иероглифы/другой алфавит — одна повторная попытка.
     if _FOREIGN_SCRIPT_RE.search(reply or ""):
         retry = await _call()
