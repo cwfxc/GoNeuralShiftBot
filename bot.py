@@ -686,7 +686,7 @@ Columbia Suicide Severity Rating Scale, принцип прямого скрин
     async def _call():
         response = await asyncio.to_thread(
             groq_client.chat.completions.create,
-            model="llama-3.3-70b-versatile",
+            model="qwen/qwen3.6-27b",
             messages=messages,
             max_tokens=500,
             # Temperature понижена с 0.7 до 0.45 — для терапевтического контекста модель должна быть
