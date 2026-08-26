@@ -689,9 +689,8 @@ Columbia Suicide Severity Rating Scale, принцип прямого скрин
             model="qwen/qwen3.6-27b",
             messages=messages,
             max_tokens=500,
-            # Temperature понижена с 0.7 до 0.45 — для терапевтического контекста модель должна быть
-            # стабильнее в следовании правилам (не соскальзывать в советы вместо вопросов)
             temperature=0.45,
+            reasoning_effort="none",
         )
         return response.choices[0].message.content
 
