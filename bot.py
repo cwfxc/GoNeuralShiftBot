@@ -895,7 +895,7 @@ async def _chat_and_reply(update: Update, context: ContextTypes.DEFAULT_TYPE, us
     offer = offer_tool_keyboard(tool) if tool else None
     # Если предлагаем инструмент — отправляем инлайн-кнопку (нижняя клавиатура остаётся видимой).
     # Иначе просто держим домашнюю клавиатуру.
-    await update.message.reply_text(reply, reply_markup=offer or main_keyboard())
+    await update.message.reply_text(reply, reply_markup=offer or None)
 
 async def handle_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Домашний экран = разговор. Кнопки-меню открывают инструменты/прогресс/помощь/донат,
